@@ -333,8 +333,8 @@ namespace {
             return std::addressof(s);
         }
 
-        RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* e,
-                                              RE::BSTEventSource<RE::TESActivateEvent>*) override {
+        RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* e, RE::BSTEventSource<RE::TESActivateEvent>*) override {
+
             if (!e) {
                 return RE::BSEventNotifyControl::kContinue;
             }
