@@ -47,9 +47,6 @@ I wanted a lightweight follower framework that handled the basics without being 
 **"bFollowerEssential":** If enabled, any loaded actor that is in "CurrentFollowerFaction" gets their base flagged Essential.  
 That means your current vanilla followers you have with you will stop dying.
 
-## Source
-[Github Page](https://github.com/ItzIvy05/SimpleFollowerFramework)
-
 ## Check out my other mods
 [![ ](https://i.imgur.com/nzFC1ji.png)](https://next.nexusmods.com/profile/ItzIvy/mods?gameId=1704)
 
