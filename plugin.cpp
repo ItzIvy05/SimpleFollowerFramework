@@ -164,10 +164,6 @@ bool IsRequiredPluginLoaded() {
             return true;
         }
 
-        if (RE::TESForm::LookupByEditorID("SFF_CanRecruitMore")) {
-            return true;
-        }
-
         return false;
     }
 
