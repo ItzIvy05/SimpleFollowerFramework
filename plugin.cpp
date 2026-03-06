@@ -10,7 +10,6 @@
 #include <limits>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <unordered_map>
 
 namespace {
@@ -20,8 +19,6 @@ namespace {
     void ApplyFollowerDialogueGate();
 
     void LoadEssentialSetting();
-    void RefreshEssentialLoadedActors();
-    void ScheduleEssentialRecheckBurst();
     void UpdateEssentialForActor(RE::Actor* a);
 
     RE::TESGlobal* g_playerFollowerCount = nullptr;
@@ -149,17 +146,16 @@ namespace {
         ExitProcess(1);
     }
 
-bool IsRequiredPluginLoaded() {
+    bool IsRequiredPluginLoaded() {
         auto* dh = RE::TESDataHandler::GetSingleton();
         if (!dh) {
             return false;
         }
-
+        // check if ESP and EditorIDs exist, in the LO
         if (dh->LookupLoadedModByName("Simple Follower Framework.esp")) {
             return true;
         }
 
-        // check if EditorIDs exist
         if (RE::TESForm::LookupByEditorID("SFF_CurrentFollowerCount")) {
             return true;
         }
@@ -213,7 +209,7 @@ bool IsRequiredPluginLoaded() {
                     }
 
                     if (same) {
-                        return !enabled;  // only early-fail if we see it explicitly disabled
+                        return !enabled;
                     }
                 }
             }
@@ -367,7 +363,7 @@ bool IsRequiredPluginLoaded() {
         const char* path = "Data\\SKSE\\Plugins\\SimpleFollowerFramework.ini";
 
         // hard defaults so mod still runs if INI is missing and dont shit its pants and crash
-        g_maxExtraFollowers = 2;
+        g_maxExtraFollowers = 4;
         g_followerPerkOption = 0;
         ClearPerkSpecs();
 
@@ -410,7 +406,6 @@ bool IsRequiredPluginLoaded() {
         std::string perkList = StripInlineComment(buf);
 
         if (perkList.empty()) {
-            // fallback for older ini that uses sPerkForm
             char buf1[512]{};
             GetPrivateProfileStringA("General", "sPerkForm", "", buf1, static_cast<DWORD>(sizeof(buf1)), path);
             perkList = StripInlineComment(buf1);
@@ -568,49 +563,51 @@ bool IsRequiredPluginLoaded() {
         }
     }
 
-    void VisitActorHandleEssential(RE::ActorHandle h) {
-        auto p = RE::Actor::LookupByHandle(h.native_handle());
-        if (p) {
-            UpdateEssentialForActor(p.get());
+    // Called by SFF_FollowerAliasScript.OnReferenceChanged when a new actor fills an alias.
+    // Alias already tells us exactly who the follower is — no process-list walk needed.
+    bool ApplyFollowerEssential(RE::StaticFunctionTag*, RE::Actor* a) {
+        if (!IsValidActor(a)) {
+            return false;
         }
-    }
-
-    void RefreshEssentialLoadedActors() {
         LoadEssentialSetting();
-
-        auto* pl = RE::ProcessLists::GetSingleton();
-        if (!pl) {
-            return;
-        }
-
-        for (auto& h : pl->highActorHandles) {
-            VisitActorHandleEssential(h);
-        }
-        for (auto& h : pl->lowActorHandles) {
-            VisitActorHandleEssential(h);
-        }
-        for (auto& h : pl->middleHighActorHandles) {
-            VisitActorHandleEssential(h);
-        }
-        for (auto& h : pl->middleLowActorHandles) {
-            VisitActorHandleEssential(h);
-        }
+        UpdateEssentialForActor(a);
+        return true;
     }
 
-    void ScheduleEssentialRecheckBurst() {
-        std::thread([]() {
-            const int marks[] = {50, 200, 500, 1000, 2000};
-            int prev = 0;
+    // Called by SFF_FollowerAliasScript.OnReferenceChanged when an actor leaves an alias.
+    // Restores whatever essential/protected state the actor had before we touched it.
+    bool RestoreFollowerEssential(RE::StaticFunctionTag*, RE::Actor* a) {
+        if (!a) {
+            return false;
+        }
 
-            for (int m : marks) {
-                ::Sleep(static_cast<DWORD>(m - prev));
-                prev = m;
+        auto* base = a->GetActorBase();
+        if (!base) {
+            return false;
+        }
 
-                if (auto* tasks = SKSE::GetTaskInterface()) {
-                    tasks->AddTask([]() { RefreshEssentialLoadedActors(); });
-                }
-            }
-        }).detach();
+        const auto id = base->GetFormID();
+        auto it = g_essOrig.find(id);
+        if (it == g_essOrig.end()) {
+            return false;
+        }
+
+        const std::uint8_t bits = it->second;
+
+        if (bits & 1) {
+            base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kEssential);
+        } else {
+            base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kEssential);
+        }
+
+        if (bits & 2) {
+            base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kProtected);
+        } else {
+            base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kProtected);
+        }
+
+        g_essOrig.erase(it);
+        return true;
     }
 
     bool AddVanillaFollower(RE::StaticFunctionTag*, RE::Actor* a) {
@@ -658,6 +655,8 @@ bool IsRequiredPluginLoaded() {
         vm->RegisterFunction("AddVanillaFollower", "SFF_SKSE", AddVanillaFollower);
         vm->RegisterFunction("IsVanillaFollower", "SFF_SKSE", IsVanillaFollower);
         vm->RegisterFunction("GetMaxFollowers", "SFF_SKSE", GetMaxFollowers);
+        vm->RegisterFunction("ApplyFollowerEssential", "SFF_SKSE", ApplyFollowerEssential);
+        vm->RegisterFunction("RestoreFollowerEssential", "SFF_SKSE", RestoreFollowerEssential);
         return true;
     }
 
@@ -674,9 +673,6 @@ bool IsRequiredPluginLoaded() {
                 if (e->opening) {
                     // vanilla checks happen around dialogue open, so i update here
                     ApplyFollowerDialogueGate();
-                    RefreshEssentialLoadedActors();
-                } else {
-                    ScheduleEssentialRecheckBurst();
                 }
             }
             return RE::BSEventNotifyControl::kContinue;
@@ -690,8 +686,7 @@ bool IsRequiredPluginLoaded() {
             return std::addressof(s);
         }
 
-        RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* e,
-                                              RE::BSTEventSource<RE::TESActivateEvent>*) override {
+        RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* e, RE::BSTEventSource<RE::TESActivateEvent>*) override {
             if (!e) {
                 return RE::BSEventNotifyControl::kContinue;
             }
@@ -713,11 +708,7 @@ bool IsRequiredPluginLoaded() {
                 return RE::BSEventNotifyControl::kContinue;
             }
 
-            // fixes the talk stale check before the dialogue menu opens
             ApplyFollowerDialogueGate();
-
-            LoadEssentialSetting();
-            UpdateEssentialForActor(actor);
 
             return RE::BSEventNotifyControl::kContinue;
         }
@@ -738,7 +729,7 @@ bool IsRequiredPluginLoaded() {
             return;
         }
 
-        // Prevent you from loading the mod without the .esp file enabled.
+        // Prevent loading the damn DLL without the .esp file enabled idk why do this but someone did it :)
         if (msg->type == SKSE::MessagingInterface::kDataLoaded) {
             if (!IsRequiredPluginLoaded()) {
                 MessageAndExit(
@@ -749,11 +740,10 @@ bool IsRequiredPluginLoaded() {
 
             ApplyFollowerDialogueGate();
             Install();
-            RefreshEssentialLoadedActors();
+            // essential state will be applied by alias OnReferenceChanged when
         } else if (msg->type == SKSE::MessagingInterface::kPostLoadGame ||
                    msg->type == SKSE::MessagingInterface::kNewGame) {
             ApplyFollowerDialogueGate();
-            RefreshEssentialLoadedActors();
         }
     }
 }
