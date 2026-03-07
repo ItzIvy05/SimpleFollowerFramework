@@ -27,10 +27,14 @@ namespace {
 
     std::int32_t g_maxExtraFollowers = 2;
 
-    // Follower Perk Option Selector
+    // Follower Option Selector (bFollowerOptionSelector / iFollowerPerkOption)
     // 0 = Option 1: No perks, use iMaxFollowers
     // 1 = Option 2: +1 follower per owned perk in sPerkForms (iMaxFollowers ignored)
+    // 2 = Option 3: follower slots scale with player Speech skill (1 slot per iSpeechLevelsPerSlot levels)
     std::int32_t g_followerPerkOption = 0;
+
+    // Option 3 config: how many Speech levels are needed to unlock each extra follower slot
+    std::int32_t g_speechLevelsPerSlot = 10;
 
     struct PerkSpec {
         bool has = false;
@@ -362,7 +366,8 @@ namespace {
     void LoadSettings() {
         const char* path = "Data\\SKSE\\Plugins\\SimpleFollowerFramework.ini";
 
-        // hard defaults so mod still runs if INI is missing and dont shit its pants and crash
+        // why wont this shit wont work properly???
+        // Update 20: it works!! so basically this shit hard defaults so mod still runs if INI is missing and dont shit its pants and crash
         g_maxExtraFollowers = 4;
         g_followerPerkOption = 0;
         ClearPerkSpecs();
@@ -387,19 +392,24 @@ namespace {
         int opt = GetPrivateProfileIntA("General", "iFollowerPerkOption", -1, path);
 
         if (opt < 0) {
-            // fallback for older ini that still uses bFollowerOptionSelector
-            opt = GetPrivateProfileIntA("General", "bFollowerOptionSelector", 0, path) != 0 ? 1 : 0;
+            opt = GetPrivateProfileIntA("General", "bFollowerOptionSelector", 0, path);
         }
 
         if (opt < 0) {
             opt = 0;
         }
 
-        if (opt > 1) {
-            opt = 1;
+        if (opt > 2) {
+            opt = 2;
         }
 
         g_followerPerkOption = opt;
+
+        int speechLevels = GetPrivateProfileIntA("General", "iSpeechLevelsPerSlot", 12, path);
+        if (speechLevels < 1) {
+            speechLevels = 1;
+        }
+        g_speechLevelsPerSlot = speechLevels;
 
         char buf[2048]{};
         GetPrivateProfileStringA("General", "sPerkForms", "", buf, static_cast<DWORD>(sizeof(buf)), path);
@@ -412,6 +422,33 @@ namespace {
         }
 
         ParsePerkFormsList(perkList);
+    }
+
+    // Option 3
+    std::int32_t GetSpeechBasedFollowerCap() {
+        constexpr std::int32_t kBaseFollowerSlot = 1;
+        constexpr std::int32_t kMaxExtraAliases = 7;
+        constexpr std::int32_t kMaxTotalFollowers = kBaseFollowerSlot + kMaxExtraAliases;
+
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            return kBaseFollowerSlot;
+        }
+
+        const float speechRaw = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeech);
+        const std::int32_t speechLevel = static_cast<std::int32_t>(speechRaw);
+
+        const std::int32_t levelsPerSlot = (g_speechLevelsPerSlot > 0) ? g_speechLevelsPerSlot : 12;
+        const std::int32_t extraSlots = speechLevel / levelsPerSlot;
+
+        std::int32_t total = kBaseFollowerSlot + extraSlots;
+        if (total < 1) {
+            total = 1;
+        }
+        if (total > kMaxTotalFollowers) {
+            total = kMaxTotalFollowers;
+        }
+        return total;
     }
 
     std::int32_t GetTotalFollowerCapFromSettings() {
@@ -445,17 +482,22 @@ namespace {
             return totalFromMaxFollowers;
         }
 
-        // Option 2: iMaxFollowers is useless here, cap is purely perk-based
-        std::int32_t total = kBaseFollowerSlot + CountOwnedPerksFromList();
+        // Option 2
+        if (g_followerPerkOption == 1) {
+            std::int32_t total = kBaseFollowerSlot + CountOwnedPerksFromList();
 
-        if (total < 1) {
-            total = 1;
-        }
-        if (total > kMaxTotalFollowers) {
-            total = kMaxTotalFollowers;
+            if (total < 1) {
+                total = 1;
+            }
+            if (total > kMaxTotalFollowers) {
+                total = kMaxTotalFollowers;
+            }
+
+            return total;
         }
 
-        return total;
+        // Option 3 (bFollowerOptionSelector=2): Speech-scaled slots
+        return GetSpeechBasedFollowerCap();
     }
 
     void ApplyFollowerDialogueGate() {
