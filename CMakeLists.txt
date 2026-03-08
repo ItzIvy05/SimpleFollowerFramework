@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 project(SimpleFollowerFramework VERSION 1.0.0 LANGUAGES CXX)
 
-# Output folder selection (same as your current file)
+# Output folder selection
 if(DEFINED ENV{SKYRIM_FOLDER} AND IS_DIRECTORY "$ENV{SKYRIM_FOLDER}/Data")
     set(OUTPUT_FOLDER "$ENV{SKYRIM_FOLDER}/Data")
 endif()
@@ -11,26 +11,36 @@ if(DEFINED ENV{SKYRIM_MODS_FOLDER} AND IS_DIRECTORY "$ENV{SKYRIM_MODS_FOLDER}")
 endif()
 
 # ---- Force CommonLibSSE-NG from your environment variable ----
-# You MUST set COMMONLIB_SSE_FOLDER to the CommonLibSSE-NG *install prefix*
-# (the folder that contains lib/cmake/CommonLibSSE/CommonLibSSEConfig.cmake)
 if(NOT DEFINED ENV{COMMONLIB_SSE_FOLDER})
     message(FATAL_ERROR "COMMONLIB_SSE_FOLDER env var not set. Set it to your CommonLibSSE-NG install prefix.")
 endif()
 
 set(COMMONLIB_PREFIX "$ENV{COMMONLIB_SSE_FOLDER}")
-
-# Prefer config packages from this prefix first
 list(PREPEND CMAKE_PREFIX_PATH "${COMMONLIB_PREFIX}")
 find_package(CommonLibSSE CONFIG REQUIRED)
 
-# Print what got found (this is the key sanity check)
 message(STATUS "Using CommonLibSSE from: ${CommonLibSSE_DIR}")
 
-add_commonlibsse_plugin(${PROJECT_NAME} SOURCES plugin.cpp)
+add_commonlibsse_plugin(${PROJECT_NAME} SOURCES
+    plugin.cpp
+    src/SFF_Settings.cpp
+    src/SFF_UI.cpp
+)
+
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
 target_precompile_headers(${PROJECT_NAME} PRIVATE PCH.h)
 
-# Deploy the DLL into mod folder if OUTPUT_FOLDER set
+target_include_directories(${PROJECT_NAME} PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    src
+)
+
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
+    _CRT_SECURE_NO_WARNINGS
+)
+
+# Deploy the DLL into mod folder if OUTPUT_FOLDER is set
 if(DEFINED OUTPUT_FOLDER)
     set(DLL_FOLDER "${OUTPUT_FOLDER}/SKSE/Plugins")
     message(STATUS "SKSE plugin output folder: ${DLL_FOLDER}")

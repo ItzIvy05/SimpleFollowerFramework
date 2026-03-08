@@ -12,133 +12,27 @@
 #include <string_view>
 #include <unordered_map>
 
+#include "SFF_Settings.h"
+#include "SFF_UI.h"
+
 namespace {
-    void LoadSettings();
     void Install();
     void OnMessage(SKSE::MessagingInterface::Message* msg);
     void ApplyFollowerDialogueGate();
 
-    void LoadEssentialSetting();
     void UpdateEssentialForActor(RE::Actor* a);
 
-    RE::TESGlobal* g_playerFollowerCount = nullptr;
-    RE::TESGlobal* g_sffCanRecruitMore = nullptr;
+    RE::TESGlobal* g_playerFollowerCount   = nullptr;
+    RE::TESGlobal* g_sffCanRecruitMore     = nullptr;
     RE::TESGlobal* g_sffCurrentFollowerCount = nullptr;
 
-    std::int32_t g_maxExtraFollowers = 2;
-
-    // Follower Option Selector (bFollowerOptionSelector / iFollowerPerkOption)
-    // 0 = Option 1: No perks, use iMaxFollowers
-    // 1 = Option 2: +1 follower per owned perk in sPerkForms (iMaxFollowers ignored)
-    // 2 = Option 3: follower slots scale with player Speech skill (1 slot per iSpeechLevelsPerSlot levels)
-    std::int32_t g_followerPerkOption = 0;
-
-    // Option 3 config: how many Speech levels are needed to unlock each extra follower slot
-    std::int32_t g_speechLevelsPerSlot = 10;
-
-    struct PerkSpec {
-        bool has = false;
-        std::string file;
-        std::uint32_t localID = 0;
-    };
-
-    static constexpr std::size_t kMaxPerkSpecs = 8;
-    std::array<PerkSpec, kMaxPerkSpecs> g_perkSpecs{};
-    std::size_t g_perkSpecCount = 0;
+    std::unordered_map<RE::FormID, std::uint8_t> g_essOrig{};
 
     static constexpr const char* kRequiredPluginName = "Simple Follower Framework.esp";
 
-    bool g_bFollowerEssential = false;
-    std::unordered_map<RE::FormID, std::uint8_t> g_essOrig{};
-
     bool IsValidActor(RE::Actor* a) { return a && a != RE::PlayerCharacter::GetSingleton() && !a->IsDead(); }
 
-    std::string TrimCopy(std::string s) {
-        auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
-
-        while (!s.empty() && isSpace(static_cast<unsigned char>(s.front()))) {
-            s.erase(s.begin());
-        }
-        while (!s.empty() && isSpace(static_cast<unsigned char>(s.back()))) {
-            s.pop_back();
-        }
-        return s;
-    }
-
-    std::string StripInlineComment(std::string s) {
-        auto pSemi = s.find(';');
-        if (pSemi != std::string::npos) {
-            s = s.substr(0, pSemi);
-        }
-
-        auto pHash = s.find('#');
-        if (pHash != std::string::npos) {
-            s = s.substr(0, pHash);
-        }
-
-        auto pSlash = s.find("//");
-        if (pSlash != std::string::npos) {
-            s = s.substr(0, pSlash);
-        }
-
-        return TrimCopy(s);
-    }
-
-    std::string StripQuotes(std::string s) {
-        s = TrimCopy(s);
-        if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
-            s = s.substr(1, s.size() - 2);
-        }
-        s = TrimCopy(s);
-
-        if (s.find('"') != std::string::npos) {
-            std::string out;
-            out.reserve(s.size());
-            for (char c : s) {
-                if (c != '"') {
-                    out.push_back(c);
-                }
-            }
-            s = TrimCopy(out);
-        }
-
-        return s;
-    }
-
-    bool ParsePluginFormPair(const std::string& input, std::string& outFile, std::uint32_t& outLocalFormID) {
-        auto s = StripQuotes(input);
-        if (s.empty()) {
-            return false;
-        }
-
-        auto sep = s.find('|');
-        if (sep == std::string::npos) {
-            sep = s.find(':');
-        }
-        if (sep == std::string::npos) {
-            return false;
-        }
-
-        auto file = StripQuotes(s.substr(0, sep));
-        auto idStr = StripQuotes(s.substr(sep + 1));
-
-        if (file.empty() || idStr.empty()) {
-            return false;
-        }
-
-        if (idStr.rfind("0x", 0) == 0 || idStr.rfind("0X", 0) == 0) {
-            idStr = idStr.substr(2);
-        }
-
-        try {
-            outLocalFormID = static_cast<std::uint32_t>(std::stoul(idStr, nullptr, 16));
-        } catch (...) {
-            return false;
-        }
-
-        outFile = file;
-        return true;
-    }
+    // File / plugin checks
 
     bool FileExistsA(const char* path) {
         DWORD attrs = GetFileAttributesA(path);
@@ -146,92 +40,74 @@ namespace {
     }
 
     [[noreturn]] void MessageAndExit(const char* msg) {
-        MessageBoxA(nullptr, msg, "SimpleFollowerFramework.dll", MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);
+        MessageBoxA(nullptr, msg, "SimpleFollowerFramework.dll",
+                    MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);
         ExitProcess(1);
     }
 
     bool IsRequiredPluginLoaded() {
         auto* dh = RE::TESDataHandler::GetSingleton();
-        if (!dh) {
-            return false;
-        }
-        // check if ESP and EditorIDs exist, in the LO
-        if (dh->LookupLoadedModByName("Simple Follower Framework.esp")) {
-            return true;
-        }
-
-        if (RE::TESForm::LookupByEditorID("SFF_CurrentFollowerCount")) {
-            return true;
-        }
-
+        if (!dh) return false;
+        if (dh->LookupLoadedModByName("Simple Follower Framework.esp")) return true;
+        if (RE::TESForm::LookupByEditorID("SFF_CurrentFollowerCount")) return true;
         return false;
     }
 
     bool PluginsTxtExplicitlyDisablesRequiredPlugin() {
         char localAppData[MAX_PATH]{};
-        DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", localAppData, static_cast<DWORD>(sizeof(localAppData)));
-        if (n == 0 || n >= sizeof(localAppData)) {
-            return false;
-        }
+        DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", localAppData,
+                                          static_cast<DWORD>(sizeof(localAppData)));
+        if (n == 0 || n >= sizeof(localAppData)) return false;
 
-        const char* dirs[] = {"Skyrim Special Edition", "Skyrim Special Edition GOG", "Skyrim VR", "Skyrim"};
+        const char* dirs[] = {"Skyrim Special Edition", "Skyrim Special Edition GOG",
+                              "Skyrim VR", "Skyrim"};
 
         for (auto* d : dirs) {
             std::string path = std::string(localAppData) + "\\" + d + "\\plugins.txt";
-            if (!FileExistsA(path.c_str())) {
-                continue;
-            }
+            if (!FileExistsA(path.c_str())) continue;
 
             std::ifstream in(path);
-            if (!in.is_open()) {
-                continue;
-            }
+            if (!in.is_open()) continue;
 
             std::string line;
             while (std::getline(in, line)) {
-                line = StripInlineComment(line);
-                if (line.empty()) {
-                    continue;
+                // Strip inline comments
+                for (const char* tok : {";", "#", "//"}) {
+                    auto p = line.find(tok);
+                    if (p != std::string::npos) line = line.substr(0, p);
                 }
+                while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back())))
+                    line.pop_back();
+                if (line.empty()) continue;
 
-                bool enabled = false;
-                if (!line.empty() && line.front() == '*') {
-                    enabled = true;
+                bool enabled = (!line.empty() && line.front() == '*');
+                if (enabled) { line.erase(line.begin()); }
+                while (!line.empty() && std::isspace(static_cast<unsigned char>(line.front())))
                     line.erase(line.begin());
-                    line = TrimCopy(line);
-                }
 
                 if (line.size() == std::strlen(kRequiredPluginName)) {
                     bool same = true;
                     for (std::size_t i = 0; i < line.size(); ++i) {
-                        unsigned char a = static_cast<unsigned char>(line[i]);
-                        unsigned char b = static_cast<unsigned char>(kRequiredPluginName[i]);
-                        if (std::tolower(a) != std::tolower(b)) {
-                            same = false;
-                            break;
+                        if (std::tolower(static_cast<unsigned char>(line[i])) !=
+                            std::tolower(static_cast<unsigned char>(kRequiredPluginName[i]))) {
+                            same = false; break;
                         }
                     }
-
-                    if (same) {
-                        return !enabled;
-                    }
+                    if (same) return !enabled;
                 }
             }
         }
-
         return false;
     }
 
     void EarlyPreflightCheck() {
         std::string espPath = std::string("Data\\") + kRequiredPluginName;
-
         if (!FileExistsA(espPath.c_str())) {
             MessageAndExit(
                 "Missing required file:\n\n"
                 "Data\\Simple Follower Framework.esp\n"
                 "Install it (or fix your mod manager / VFS), then relaunch.");
         }
-
         if (PluginsTxtExplicitlyDisablesRequiredPlugin()) {
             MessageAndExit(
                 "Required plugin is disabled:\n"
@@ -240,90 +116,7 @@ namespace {
         }
     }
 
-    void ClearPerkSpecs() {
-        g_perkSpecCount = 0;
-        for (auto& p : g_perkSpecs) {
-            p.has = false;
-            p.file.clear();
-            p.localID = 0;
-        }
-    }
-
-    void AddPerkSpecIfValid(const std::string& spec) {
-        if (g_perkSpecCount >= kMaxPerkSpecs) {
-            return;
-        }
-
-        std::string file;
-        std::uint32_t localID = 0;
-        if (!ParsePluginFormPair(spec, file, localID)) {
-            return;
-        }
-
-        auto& p = g_perkSpecs[g_perkSpecCount];
-        p.has = true;
-        p.file = file;
-        p.localID = localID;
-        ++g_perkSpecCount;
-    }
-
-    void ParsePerkFormsList(const std::string& input) {
-        ClearPerkSpecs();
-
-        std::string s = StripQuotes(TrimCopy(input));
-        if (s.empty()) {
-            return;
-        }
-
-        std::size_t start = 0;
-        while (start < s.size() && g_perkSpecCount < kMaxPerkSpecs) {
-            std::size_t comma = s.find(',', start);
-            if (comma == std::string::npos) {
-                comma = s.size();
-            }
-
-            std::string token = StripQuotes(TrimCopy(s.substr(start, comma - start)));
-            if (!token.empty()) {
-                AddPerkSpecIfValid(token);
-            }
-
-            start = comma + 1;
-        }
-    }
-
-    bool HasPerkFromSpec(const std::string& file, std::uint32_t localID) {
-        auto* player = RE::PlayerCharacter::GetSingleton();
-        if (!player) {
-            return false;
-        }
-
-        auto* dh = RE::TESDataHandler::GetSingleton();
-        if (!dh) {
-            return false;
-        }
-
-        auto* form = dh->LookupForm(localID, file);
-        auto* perk = form ? form->As<RE::BGSPerk>() : nullptr;
-        if (!perk) {
-            return false;
-        }
-
-        return player->HasPerk(perk);
-    }
-
-    std::int32_t CountOwnedPerksFromList() {
-        std::int32_t owned = 0;
-        for (std::size_t i = 0; i < g_perkSpecCount; ++i) {
-            const auto& p = g_perkSpecs[i];
-            if (!p.has) {
-                continue;
-            }
-            if (HasPerkFromSpec(p.file, p.localID)) {
-                ++owned;
-            }
-        }
-        return owned;
-    }
+    // ── Faction / global lookups
 
     RE::TESFaction* GetFaction(std::string_view editorID) {
         auto* form = RE::TESForm::LookupByEditorID(editorID);
@@ -333,192 +126,92 @@ namespace {
     RE::TESGlobal* GetFollowerCountGlobal() {
         if (!g_playerFollowerCount) {
             auto* form = RE::TESForm::LookupByEditorID("PlayerFollowerCount");
-            if (form) {
-                g_playerFollowerCount = form->As<RE::TESGlobal>();
-            }
+            if (form) g_playerFollowerCount = form->As<RE::TESGlobal>();
         }
-
         return g_playerFollowerCount;
     }
 
     RE::TESGlobal* GetSFFCanRecruitMoreGlobal() {
         if (!g_sffCanRecruitMore) {
             auto* form = RE::TESForm::LookupByEditorID("SFF_CanRecruitMore");
-            if (form) {
-                g_sffCanRecruitMore = form->As<RE::TESGlobal>();
-            }
+            if (form) g_sffCanRecruitMore = form->As<RE::TESGlobal>();
         }
-
         return g_sffCanRecruitMore;
     }
 
     RE::TESGlobal* GetSFFCurrentFollowerCountGlobal() {
         if (!g_sffCurrentFollowerCount) {
             auto* form = RE::TESForm::LookupByEditorID("SFF_CurrentFollowerCount");
-            if (form) {
-                g_sffCurrentFollowerCount = form->As<RE::TESGlobal>();
-            }
+            if (form) g_sffCurrentFollowerCount = form->As<RE::TESGlobal>();
         }
-
         return g_sffCurrentFollowerCount;
     }
 
-    void LoadSettings() {
-        const char* path = "Data\\SKSE\\Plugins\\SimpleFollowerFramework.ini";
+    // Perk checking
 
-        // why wont this shit wont work properly???
-        // Update 20: it works!! so basically this shit hard defaults so mod still runs if INI is missing and dont shit its pants and crash
-        g_maxExtraFollowers = 4;
-        g_followerPerkOption = 0;
-        ClearPerkSpecs();
-
-        DWORD attrs = GetFileAttributesA(path);
-        if (attrs == INVALID_FILE_ATTRIBUTES) {
-            return;
-        }
-
-        int maxVal = GetPrivateProfileIntA("General", "iMaxFollowers", 3, path);
-
-        if (maxVal < 1) {
-            maxVal = 1;
-        }
-
-        if (maxVal > 8) {
-            maxVal = 8;
-        }
-
-        g_maxExtraFollowers = maxVal - 1;
-
-        int opt = GetPrivateProfileIntA("General", "iFollowerPerkOption", -1, path);
-
-        if (opt < 0) {
-            opt = GetPrivateProfileIntA("General", "bFollowerOptionSelector", 0, path);
-        }
-
-        if (opt < 0) {
-            opt = 0;
-        }
-
-        if (opt > 2) {
-            opt = 2;
-        }
-
-        g_followerPerkOption = opt;
-
-        int speechLevels = GetPrivateProfileIntA("General", "iSpeechLevelsPerSlot", 12, path);
-        if (speechLevels < 1) {
-            speechLevels = 1;
-        }
-        g_speechLevelsPerSlot = speechLevels;
-
-        char buf[2048]{};
-        GetPrivateProfileStringA("General", "sPerkForms", "", buf, static_cast<DWORD>(sizeof(buf)), path);
-        std::string perkList = StripInlineComment(buf);
-
-        if (perkList.empty()) {
-            char buf1[512]{};
-            GetPrivateProfileStringA("General", "sPerkForm", "", buf1, static_cast<DWORD>(sizeof(buf1)), path);
-            perkList = StripInlineComment(buf1);
-        }
-
-        ParsePerkFormsList(perkList);
+    bool HasPerkFromSpec(const std::string& file, std::uint32_t localID) {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) return false;
+        auto* dh = RE::TESDataHandler::GetSingleton();
+        if (!dh) return false;
+        auto* form = dh->LookupForm(localID, file);
+        auto* perk = form ? form->As<RE::BGSPerk>() : nullptr;
+        return perk && player->HasPerk(perk);
     }
 
-    // Option 3
+    std::int32_t CountOwnedPerksFromList() {
+        std::int32_t owned = 0;
+        for (std::size_t i = 0; i < SFF_Settings::PerkSpecCount; ++i) {
+            const auto& p = SFF_Settings::PerkSpecs[i];
+            if (p.has && HasPerkFromSpec(p.file, p.localID)) ++owned;
+        }
+        return owned;
+    }
+
+    // Speech-based cap (Option 2)
+
     std::int32_t GetSpeechBasedFollowerCap() {
-        constexpr std::int32_t kBaseFollowerSlot = 1;
-        constexpr std::int32_t kMaxExtraAliases = 7;
-        constexpr std::int32_t kMaxTotalFollowers = kBaseFollowerSlot + kMaxExtraAliases;
-
+        constexpr std::int32_t kBase = 1, kMaxExtras = 7;
         auto* player = RE::PlayerCharacter::GetSingleton();
-        if (!player) {
-            return kBaseFollowerSlot;
-        }
+        if (!player) return kBase;
 
-        const float speechRaw = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeech);
-        const std::int32_t speechLevel = static_cast<std::int32_t>(speechRaw);
-
-        const std::int32_t levelsPerSlot = (g_speechLevelsPerSlot > 0) ? g_speechLevelsPerSlot : 12;
-        const std::int32_t extraSlots = speechLevel / levelsPerSlot;
-
-        std::int32_t total = kBaseFollowerSlot + extraSlots;
-        if (total < 1) {
-            total = 1;
-        }
-        if (total > kMaxTotalFollowers) {
-            total = kMaxTotalFollowers;
-        }
-        return total;
+        const auto speech = static_cast<std::int32_t>(
+            player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeech));
+        const std::int32_t levelsPerSlot =
+            (SFF_Settings::SpeechLevelsPerSlot > 0) ? SFF_Settings::SpeechLevelsPerSlot : 10;
+        std::int32_t total = kBase + (speech / levelsPerSlot);
+        return std::clamp(total, 1, kBase + kMaxExtras);
     }
 
     std::int32_t GetTotalFollowerCapFromSettings() {
-        LoadSettings();
+        constexpr std::int32_t kBase = 1, kMaxExtras = 7;
 
-        constexpr std::int32_t kBaseFollowerSlot = 1;
-        constexpr std::int32_t kMaxExtraAliases = 7;
-        constexpr std::int32_t kMaxTotalFollowers = kBaseFollowerSlot + kMaxExtraAliases;
-
-        std::int32_t extrasAllowed = g_maxExtraFollowers;
-
-        if (extrasAllowed < 0) {
-            extrasAllowed = 0;
+        if (SFF_Settings::FollowerPerkOption == 0) {
+            int extras = std::clamp(static_cast<int>(SFF_Settings::MaxExtraFollowers), 0, kMaxExtras);
+            return std::clamp(kBase + extras, 1, kBase + kMaxExtras);
         }
-
-        if (extrasAllowed > kMaxExtraAliases) {
-            extrasAllowed = kMaxExtraAliases;
+        if (SFF_Settings::FollowerPerkOption == 1) {
+            return std::clamp(kBase + CountOwnedPerksFromList(), 1, kBase + kMaxExtras);
         }
-
-        std::int32_t totalFromMaxFollowers = kBaseFollowerSlot + extrasAllowed;
-
-        if (totalFromMaxFollowers < 1) {
-            totalFromMaxFollowers = 1;
-        }
-
-        if (totalFromMaxFollowers > kMaxTotalFollowers) {
-            totalFromMaxFollowers = kMaxTotalFollowers;
-        }
-
-        if (g_followerPerkOption == 0) {
-            return totalFromMaxFollowers;
-        }
-
-        // Option 2
-        if (g_followerPerkOption == 1) {
-            std::int32_t total = kBaseFollowerSlot + CountOwnedPerksFromList();
-
-            if (total < 1) {
-                total = 1;
-            }
-            if (total > kMaxTotalFollowers) {
-                total = kMaxTotalFollowers;
-            }
-
-            return total;
-        }
-
-        // Option 3 (bFollowerOptionSelector=2): Speech-scaled slots
+        // Option 2 — speech-scaled (always live)
         return GetSpeechBasedFollowerCap();
     }
 
+    // Dialogue gate
+
     void ApplyFollowerDialogueGate() {
         auto* followerCount = GetFollowerCountGlobal();
-        if (!followerCount) {
-            return;
-        }
+        if (!followerCount) return;
 
-        const auto totalCap = GetTotalFollowerCapFromSettings();
-
+        const auto totalCap  = GetTotalFollowerCapFromSettings();
         int currentCount = 0;
-        if (auto* currentCountGlobal = GetSFFCurrentFollowerCountGlobal()) {
-            currentCount = static_cast<int>(currentCountGlobal->value);
-            if (currentCount < 0) {
-                currentCount = 0;
-            }
+        if (auto* ccg = GetSFFCurrentFollowerCountGlobal()) {
+            currentCount = std::max(static_cast<int>(ccg->value), 0);
         }
 
-        const bool canRecruitMore = currentCount < totalCap;
+        const bool canRecruitMore = (currentCount < totalCap);
 
-        // vanilla hire dialogue reads PlayerFollowerCount, so i fake it here
+        // Vanilla hire dialogue reads PlayerFollowerCount — fake it here
         followerCount->value = canRecruitMore ? 0.0f : 1.0f;
 
         if (auto* canRecruit = GetSFFCanRecruitMoreGlobal()) {
@@ -526,61 +219,36 @@ namespace {
         }
     }
 
-    void LoadEssentialSetting() {
-        const char* path = "Data\\SKSE\\Plugins\\SimpleFollowerFramework.ini";
-        DWORD attrs = GetFileAttributesA(path);
-        if (attrs == INVALID_FILE_ATTRIBUTES) {
-            g_bFollowerEssential = false;
-            return;
-        }
-        g_bFollowerEssential = GetPrivateProfileIntA("General", "bFollowerEssential", 0, path) != 0;
-    }
+    // Essential flag management
 
     bool IsInServiceEssential(RE::Actor* a) {
-        if (!a) {
-            return false;
-        }
+        if (!a) return false;
         auto* current = GetFaction("CurrentFollowerFaction");
-        if (!current) {
-            return false;
-        }
-        return a->IsInFaction(current) && a->IsPlayerTeammate();
+        return current && a->IsInFaction(current) && a->IsPlayerTeammate();
     }
 
     void UpdateEssentialForActor(RE::Actor* a) {
-        if (!a) {
-            return;
-        }
-
+        if (!a) return;
         auto* player = RE::PlayerCharacter::GetSingleton();
-        if (player && a == player) {
-            return;
-        }
-
+        if (player && a == player) return;
         auto* base = a->GetActorBase();
-        if (!base) {
-            return;
-        }
+        if (!base) return;
 
         const auto id = base->GetFormID();
-        const bool want = g_bFollowerEssential && IsInServiceEssential(a);
-
+        const bool want = SFF_Settings::FollowerEssential && IsInServiceEssential(a);
         auto it = g_essOrig.find(id);
 
         if (want) {
             if (it == g_essOrig.end()) {
+
                 const bool e = base->actorData.actorBaseFlags.any(RE::ACTOR_BASE_DATA::Flag::kEssential);
                 const bool p = base->actorData.actorBaseFlags.any(RE::ACTOR_BASE_DATA::Flag::kProtected);
+
                 std::uint8_t bits = 0;
-                if (e) {
-                    bits |= 1;
-                }
-                if (p) {
-                    bits |= 2;
-                }
+                if (e) bits |= 1;
+                if (p) bits |= 2;
                 g_essOrig.emplace(id, bits);
             }
-
             base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kEssential);
             base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kProtected);
             return;
@@ -589,189 +257,115 @@ namespace {
         if (it != g_essOrig.end()) {
             const std::uint8_t bits = it->second;
 
-            if (bits & 1) {
-                base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kEssential);
-            } else {
-                base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kEssential);
-            }
-
-            if (bits & 2) {
-                base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kProtected);
-            } else {
-                base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kProtected);
-            }
+            if (bits & 1) base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kEssential);
+            else          base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kEssential);
+            if (bits & 2) base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kProtected);
+            else          base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kProtected);
 
             g_essOrig.erase(it);
         }
     }
 
-    // Called by SFF_FollowerAliasScript.OnReferenceChanged when a new actor fills an alias.
-    // Alias already tells us exactly who the follower is � no process-list walk needed.
+    // ── Papyrus-exported functions ────────────────────────────────────────────
+
     bool ApplyFollowerEssential(RE::StaticFunctionTag*, RE::Actor* a) {
-        if (!IsValidActor(a)) {
-            return false;
-        }
-        LoadEssentialSetting();
+        if (!IsValidActor(a)) return false;
+        SFF_Settings::Load();   // cache check
         UpdateEssentialForActor(a);
         return true;
     }
 
-    // Called by SFF_FollowerAliasScript.OnReferenceChanged when an actor leaves an alias.
-    // Restores whatever essential/protected state the actor had before we touched it.
     bool RestoreFollowerEssential(RE::StaticFunctionTag*, RE::Actor* a) {
-        if (!a) {
-            return false;
-        }
-
+        if (!a) return false;
         auto* base = a->GetActorBase();
-        if (!base) {
-            return false;
-        }
+        if (!base) return false;
 
         const auto id = base->GetFormID();
         auto it = g_essOrig.find(id);
-        if (it == g_essOrig.end()) {
-            return false;
-        }
+        if (it == g_essOrig.end()) return false;
 
         const std::uint8_t bits = it->second;
-
-        if (bits & 1) {
-            base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kEssential);
-        } else {
-            base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kEssential);
-        }
-
-        if (bits & 2) {
-            base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kProtected);
-        } else {
-            base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kProtected);
-        }
-
+        if (bits & 1) base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kEssential);
+        else          base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kEssential);
+        if (bits & 2) base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kProtected);
+        else          base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kProtected);
         g_essOrig.erase(it);
         return true;
     }
 
     bool AddVanillaFollower(RE::StaticFunctionTag*, RE::Actor* a) {
-        if (!IsValidActor(a)) {
-            return false;
-        }
-
+        if (!IsValidActor(a)) return false;
         auto* potential = GetFaction("PotentialFollowerFaction");
-        auto* current = GetFaction("CurrentFollowerFaction");
-        if (!potential || !current) {
-            return false;
-        }
-
-        if (!a->IsInFaction(potential)) {
-            return false;
-        }
-
-        if (!a->IsInFaction(current)) {
-            a->AddToFaction(current, 0);
-        }
-
+        auto* current   = GetFaction("CurrentFollowerFaction");
+        if (!potential || !current) return false;
+        if (!a->IsInFaction(potential)) return false;
+        if (!a->IsInFaction(current)) a->AddToFaction(current, 0);
         a->EvaluatePackage();
-
-        LoadEssentialSetting();
+        SFF_Settings::Load();
         UpdateEssentialForActor(a);
-
         return true;
     }
 
     bool IsVanillaFollower(RE::StaticFunctionTag*, RE::Actor* a) {
-        if (!a) {
-            return false;
-        }
-
+        if (!a) return false;
         auto* current = GetFaction("CurrentFollowerFaction");
         return current && a->IsInFaction(current);
     }
 
     std::int32_t GetMaxFollowers(RE::StaticFunctionTag*) {
-        // this returns TOTAL cap (like how i like to clap your mother wut wut) (base 1 + extras)
         return GetTotalFollowerCapFromSettings();
     }
 
     bool RegisterPapyrus(RE::BSScript::IVirtualMachine* vm) {
-        vm->RegisterFunction("AddVanillaFollower", "SFF_SKSE", AddVanillaFollower);
-        vm->RegisterFunction("IsVanillaFollower", "SFF_SKSE", IsVanillaFollower);
-        vm->RegisterFunction("GetMaxFollowers", "SFF_SKSE", GetMaxFollowers);
-        vm->RegisterFunction("ApplyFollowerEssential", "SFF_SKSE", ApplyFollowerEssential);
-        vm->RegisterFunction("RestoreFollowerEssential", "SFF_SKSE", RestoreFollowerEssential);
+        vm->RegisterFunction("AddVanillaFollower","SFF_SKSE", AddVanillaFollower);
+        vm->RegisterFunction("IsVanillaFollower","SFF_SKSE", IsVanillaFollower);
+        vm->RegisterFunction("GetMaxFollowers","SFF_SKSE", GetMaxFollowers);
+        vm->RegisterFunction("ApplyFollowerEssential","SFF_SKSE", ApplyFollowerEssential);
+        vm->RegisterFunction("RestoreFollowerEssential","SFF_SKSE", RestoreFollowerEssential);
         return true;
     }
 
+    // ── Event sinks ───────────────────────────────────────────────────────────
+
     class MenuSink final : public RE::BSTEventSink<RE::MenuOpenCloseEvent> {
     public:
-        static MenuSink* GetSingleton() {
-            static MenuSink s;
-            return std::addressof(s);
-        }
-
+        static MenuSink* GetSingleton() { static MenuSink s; return &s; }
         RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* e,
                                               RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
-            if (e && e->menuName == "Dialogue Menu") {
-                if (e->opening) {
-                    // vanilla checks happen around dialogue open, so i update here
-                    ApplyFollowerDialogueGate();
-                }
-            }
+            if (e && e->menuName == "Dialogue Menu" && e->opening)
+                ApplyFollowerDialogueGate();
             return RE::BSEventNotifyControl::kContinue;
         }
     };
 
     class ActivateSink final : public RE::BSTEventSink<RE::TESActivateEvent> {
     public:
-        static ActivateSink* GetSingleton() {
-            static ActivateSink s;
-            return std::addressof(s);
-        }
-
-        RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* e, RE::BSTEventSource<RE::TESActivateEvent>*) override {
-            if (!e) {
-                return RE::BSEventNotifyControl::kContinue;
-            }
-
+        static ActivateSink* GetSingleton() { static ActivateSink s; return &s; }
+        RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* e,
+                                              RE::BSTEventSource<RE::TESActivateEvent>*) override {
+            if (!e) return RE::BSEventNotifyControl::kContinue;
             auto* player = RE::PlayerCharacter::GetSingleton();
-            auto* activatorRef = e->actionRef.get();
-            auto* activatedRef = e->objectActivated.get();
-
-            if (!player || !activatorRef || !activatedRef) {
-                return RE::BSEventNotifyControl::kContinue;
-            }
-
-            if (activatorRef != player) {
-                return RE::BSEventNotifyControl::kContinue;
-            }
-
-            auto* actor = activatedRef->As<RE::Actor>();
-            if (!actor || actor == player) {
-                return RE::BSEventNotifyControl::kContinue;
-            }
-
+            auto* activator  = e->actionRef.get();
+            auto* activated  = e->objectActivated.get();
+            if (!player || !activator || !activated) return RE::BSEventNotifyControl::kContinue;
+            if (activator != player) return RE::BSEventNotifyControl::kContinue;
+            auto* actor = activated->As<RE::Actor>();
+            if (!actor || actor == player) return RE::BSEventNotifyControl::kContinue;
             ApplyFollowerDialogueGate();
-
             return RE::BSEventNotifyControl::kContinue;
         }
     };
 
     void Install() {
-        if (auto* ui = RE::UI::GetSingleton()) {
+        if (auto* ui = RE::UI::GetSingleton())
             ui->AddEventSink<RE::MenuOpenCloseEvent>(MenuSink::GetSingleton());
-        }
-
-        if (auto* events = RE::ScriptEventSourceHolder::GetSingleton()) {
+        if (auto* events = RE::ScriptEventSourceHolder::GetSingleton())
             events->AddEventSink<RE::TESActivateEvent>(ActivateSink::GetSingleton());
-        }
     }
 
     void OnMessage(SKSE::MessagingInterface::Message* msg) {
-        if (!msg) {
-            return;
-        }
+        if (!msg) return;
 
-        // Prevent loading the damn DLL without the .esp file enabled idk why do this but someone did it :)
         if (msg->type == SKSE::MessagingInterface::kDataLoaded) {
             if (!IsRequiredPluginLoaded()) {
                 MessageAndExit(
@@ -779,15 +373,17 @@ namespace {
                     "Simple Follower Framework.esp\n"
                     "Enable it in your load order, then relaunch.");
             }
-
             ApplyFollowerDialogueGate();
             Install();
-            // essential state will be applied by alias OnReferenceChanged when
         } else if (msg->type == SKSE::MessagingInterface::kPostLoadGame ||
                    msg->type == SKSE::MessagingInterface::kNewGame) {
+            // Force a fresh INI read on every game load so any external edits
+            // to the INI are picked up without restarting the game.
+            SFF_Settings::Load(true);
             ApplyFollowerDialogueGate();
         }
     }
+
 }
 
 extern "C" __declspec(dllexport) bool SKSEPlugin_Load(const SKSE::LoadInterface* skse) {
@@ -795,13 +391,20 @@ extern "C" __declspec(dllexport) bool SKSEPlugin_Load(const SKSE::LoadInterface*
 
     SKSE::Init(skse);
 
-    if (auto* papyrus = SKSE::GetPapyrusInterface()) {
-        papyrus->Register(RegisterPapyrus);
-    }
+    // Read INI immediately so settings are ready before anything else runs
+    SFF_Settings::Load();
 
-    if (auto* messaging = SKSE::GetMessagingInterface()) {
+    // Give the UI a way to poke the dialogue gate after live changes
+    SFF_Settings::ApplyGateCallback = []() { ApplyFollowerDialogueGate(); };
+
+    if (auto* papyrus = SKSE::GetPapyrusInterface())
+        papyrus->Register(RegisterPapyrus);
+
+    if (auto* messaging = SKSE::GetMessagingInterface())
         messaging->RegisterListener(OnMessage);
-    }
+
+    // Register the in-game settings panel
+    SFF_UI::Register();
 
     return true;
 }
