@@ -1,9 +1,9 @@
 #pragma once
+#include <windows.h>
 #include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
-#include <windows.h>
 
 namespace SFF_Settings {
 
@@ -22,9 +22,11 @@ namespace SFF_Settings {
     inline std::array<PerkSpec, kMaxPerkSpecs> PerkSpecs{};
     inline std::size_t PerkSpecCount = 0;
     inline bool FollowerEssential = false;
+    inline bool FriendlyFire = false;
     inline char PerkListBuffer[2048]{};
     inline bool Loaded = false;
     inline void (*ApplyGateCallback)() = nullptr;
+    inline void (*FriendlyFireCallback)() = nullptr;
     void Load(bool force = false);
     void Save();
     void ParsePerkListIntoSpecs(const std::string& raw);

@@ -22,11 +22,33 @@ namespace {
 
     void UpdateEssentialForActor(RE::Actor* a);
 
-    RE::TESGlobal* g_playerFollowerCount   = nullptr;
-    RE::TESGlobal* g_sffCanRecruitMore     = nullptr;
+    RE::TESGlobal* g_playerFollowerCount = nullptr;
+    RE::TESGlobal* g_sffCanRecruitMore = nullptr;
     RE::TESGlobal* g_sffCurrentFollowerCount = nullptr;
 
     std::unordered_map<RE::FormID, std::uint8_t> g_essOrig{};
+
+    RE::SpellItem* g_friendlyFireSpell = nullptr;
+
+    RE::SpellItem* GetFriendlyFireSpell() {
+        if (!g_friendlyFireSpell) {
+            auto* form = RE::TESForm::LookupByEditorID("IvyCompanionsSafeSpell");
+            if (form) g_friendlyFireSpell = form->As<RE::SpellItem>();
+        }
+        return g_friendlyFireSpell;
+    }
+
+    void ApplyFriendlyFire() {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* spell = GetFriendlyFireSpell();
+        if (!player || !spell) return;
+
+        const bool has = player->HasSpell(spell);
+        if (SFF_Settings::FriendlyFire && !has)
+            player->AddSpell(spell);
+        else if (!SFF_Settings::FriendlyFire && has)
+            player->RemoveSpell(spell);
+    }
 
     static constexpr const char* kRequiredPluginName = "Simple Follower Framework.esp";
 
@@ -40,8 +62,7 @@ namespace {
     }
 
     [[noreturn]] void MessageAndExit(const char* msg) {
-        MessageBoxA(nullptr, msg, "SimpleFollowerFramework.dll",
-                    MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);
+        MessageBoxA(nullptr, msg, "SimpleFollowerFramework.dll", MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);
         ExitProcess(1);
     }
 
@@ -55,12 +76,11 @@ namespace {
 
     bool PluginsTxtExplicitlyDisablesRequiredPlugin() {
         char localAppData[MAX_PATH]{};
-        DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", localAppData,
-                                          static_cast<DWORD>(sizeof(localAppData)));
+        DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", localAppData, static_cast<DWORD>(sizeof(localAppData)));
+
         if (n == 0 || n >= sizeof(localAppData)) return false;
 
-        const char* dirs[] = {"Skyrim Special Edition", "Skyrim Special Edition GOG",
-                              "Skyrim VR", "Skyrim"};
+        const char* dirs[] = {"Skyrim Special Edition", "Skyrim Special Edition GOG", "Skyrim VR", "Skyrim"};
 
         for (auto* d : dirs) {
             std::string path = std::string(localAppData) + "\\" + d + "\\plugins.txt";
@@ -76,12 +96,13 @@ namespace {
                     auto p = line.find(tok);
                     if (p != std::string::npos) line = line.substr(0, p);
                 }
-                while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back())))
-                    line.pop_back();
+                while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) line.pop_back();
                 if (line.empty()) continue;
 
                 bool enabled = (!line.empty() && line.front() == '*');
-                if (enabled) { line.erase(line.begin()); }
+                if (enabled) {
+                    line.erase(line.begin());
+                }
                 while (!line.empty() && std::isspace(static_cast<unsigned char>(line.front())))
                     line.erase(line.begin());
 
@@ -90,7 +111,8 @@ namespace {
                     for (std::size_t i = 0; i < line.size(); ++i) {
                         if (std::tolower(static_cast<unsigned char>(line[i])) !=
                             std::tolower(static_cast<unsigned char>(kRequiredPluginName[i]))) {
-                            same = false; break;
+                            same = false;
+                            break;
                         }
                     }
                     if (same) return !enabled;
@@ -175,8 +197,8 @@ namespace {
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player) return kBase;
 
-        const auto speech = static_cast<std::int32_t>(
-            player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeech));
+        const auto speech =
+            static_cast<std::int32_t>(player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeech));
         const std::int32_t levelsPerSlot =
             (SFF_Settings::SpeechLevelsPerSlot > 0) ? SFF_Settings::SpeechLevelsPerSlot : 10;
         std::int32_t total = kBase + (speech / levelsPerSlot);
@@ -203,7 +225,7 @@ namespace {
         auto* followerCount = GetFollowerCountGlobal();
         if (!followerCount) return;
 
-        const auto totalCap  = GetTotalFollowerCapFromSettings();
+        const auto totalCap = GetTotalFollowerCapFromSettings();
         int currentCount = 0;
         if (auto* ccg = GetSFFCurrentFollowerCountGlobal()) {
             currentCount = std::max(static_cast<int>(ccg->value), 0);
@@ -240,7 +262,6 @@ namespace {
 
         if (want) {
             if (it == g_essOrig.end()) {
-
                 const bool e = base->actorData.actorBaseFlags.any(RE::ACTOR_BASE_DATA::Flag::kEssential);
                 const bool p = base->actorData.actorBaseFlags.any(RE::ACTOR_BASE_DATA::Flag::kProtected);
 
@@ -257,20 +278,24 @@ namespace {
         if (it != g_essOrig.end()) {
             const std::uint8_t bits = it->second;
 
-            if (bits & 1) base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kEssential);
-            else          base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kEssential);
-            if (bits & 2) base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kProtected);
-            else          base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kProtected);
+            if (bits & 1)
+                base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kEssential);
+            else
+                base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kEssential);
+            if (bits & 2)
+                base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kProtected);
+            else
+                base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kProtected);
 
             g_essOrig.erase(it);
         }
     }
 
-    // ── Papyrus-exported functions ────────────────────────────────────────────
+    // Papyrus-exported functions
 
     bool ApplyFollowerEssential(RE::StaticFunctionTag*, RE::Actor* a) {
         if (!IsValidActor(a)) return false;
-        SFF_Settings::Load();   // cache check
+        SFF_Settings::Load();  // cache check
         UpdateEssentialForActor(a);
         return true;
     }
@@ -285,10 +310,14 @@ namespace {
         if (it == g_essOrig.end()) return false;
 
         const std::uint8_t bits = it->second;
-        if (bits & 1) base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kEssential);
-        else          base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kEssential);
-        if (bits & 2) base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kProtected);
-        else          base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kProtected);
+        if (bits & 1)
+            base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kEssential);
+        else
+            base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kEssential);
+        if (bits & 2)
+            base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kProtected);
+        else
+            base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kProtected);
         g_essOrig.erase(it);
         return true;
     }
@@ -296,7 +325,7 @@ namespace {
     bool AddVanillaFollower(RE::StaticFunctionTag*, RE::Actor* a) {
         if (!IsValidActor(a)) return false;
         auto* potential = GetFaction("PotentialFollowerFaction");
-        auto* current   = GetFaction("CurrentFollowerFaction");
+        auto* current = GetFaction("CurrentFollowerFaction");
         if (!potential || !current) return false;
         if (!a->IsInFaction(potential)) return false;
         if (!a->IsInFaction(current)) a->AddToFaction(current, 0);
@@ -312,16 +341,14 @@ namespace {
         return current && a->IsInFaction(current);
     }
 
-    std::int32_t GetMaxFollowers(RE::StaticFunctionTag*) {
-        return GetTotalFollowerCapFromSettings();
-    }
+    std::int32_t GetMaxFollowers(RE::StaticFunctionTag*) { return GetTotalFollowerCapFromSettings(); }
 
     bool RegisterPapyrus(RE::BSScript::IVirtualMachine* vm) {
-        vm->RegisterFunction("AddVanillaFollower","SFF_SKSE", AddVanillaFollower);
-        vm->RegisterFunction("IsVanillaFollower","SFF_SKSE", IsVanillaFollower);
-        vm->RegisterFunction("GetMaxFollowers","SFF_SKSE", GetMaxFollowers);
-        vm->RegisterFunction("ApplyFollowerEssential","SFF_SKSE", ApplyFollowerEssential);
-        vm->RegisterFunction("RestoreFollowerEssential","SFF_SKSE", RestoreFollowerEssential);
+        vm->RegisterFunction("AddVanillaFollower", "SFF_SKSE", AddVanillaFollower);
+        vm->RegisterFunction("IsVanillaFollower", "SFF_SKSE", IsVanillaFollower);
+        vm->RegisterFunction("GetMaxFollowers", "SFF_SKSE", GetMaxFollowers);
+        vm->RegisterFunction("ApplyFollowerEssential", "SFF_SKSE", ApplyFollowerEssential);
+        vm->RegisterFunction("RestoreFollowerEssential", "SFF_SKSE", RestoreFollowerEssential);
         return true;
     }
 
@@ -329,22 +356,29 @@ namespace {
 
     class MenuSink final : public RE::BSTEventSink<RE::MenuOpenCloseEvent> {
     public:
-        static MenuSink* GetSingleton() { static MenuSink s; return &s; }
-        RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* e, RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
-            if (e && e->menuName == "Dialogue Menu" && e->opening)
-                ApplyFollowerDialogueGate();
+        static MenuSink* GetSingleton() {
+            static MenuSink s;
+            return &s;
+        }
+        RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* e,
+                                              RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
+            if (e && e->menuName == "Dialogue Menu" && e->opening) ApplyFollowerDialogueGate();
             return RE::BSEventNotifyControl::kContinue;
         }
     };
 
     class ActivateSink final : public RE::BSTEventSink<RE::TESActivateEvent> {
     public:
-        static ActivateSink* GetSingleton() { static ActivateSink s; return &s; }
-        RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* e, RE::BSTEventSource<RE::TESActivateEvent>*) override {
+        static ActivateSink* GetSingleton() {
+            static ActivateSink s;
+            return &s;
+        }
+        RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* e,
+                                              RE::BSTEventSource<RE::TESActivateEvent>*) override {
             if (!e) return RE::BSEventNotifyControl::kContinue;
             auto* player = RE::PlayerCharacter::GetSingleton();
-            auto* activator  = e->actionRef.get();
-            auto* activated  = e->objectActivated.get();
+            auto* activator = e->actionRef.get();
+            auto* activated = e->objectActivated.get();
             if (!player || !activator || !activated) return RE::BSEventNotifyControl::kContinue;
             if (activator != player) return RE::BSEventNotifyControl::kContinue;
             auto* actor = activated->As<RE::Actor>();
@@ -355,8 +389,7 @@ namespace {
     };
 
     void Install() {
-        if (auto* ui = RE::UI::GetSingleton())
-            ui->AddEventSink<RE::MenuOpenCloseEvent>(MenuSink::GetSingleton());
+        if (auto* ui = RE::UI::GetSingleton()) ui->AddEventSink<RE::MenuOpenCloseEvent>(MenuSink::GetSingleton());
         if (auto* events = RE::ScriptEventSourceHolder::GetSingleton())
             events->AddEventSink<RE::TESActivateEvent>(ActivateSink::GetSingleton());
     }
@@ -375,10 +408,9 @@ namespace {
             Install();
         } else if (msg->type == SKSE::MessagingInterface::kPostLoadGame ||
                    msg->type == SKSE::MessagingInterface::kNewGame) {
-            // Force a fresh INI read on every game load so any external edits
-            // to the INI are picked up without restarting the game.
             SFF_Settings::Load(true);
             ApplyFollowerDialogueGate();
+            ApplyFriendlyFire();
         }
     }
 
@@ -394,12 +426,11 @@ extern "C" __declspec(dllexport) bool SKSEPlugin_Load(const SKSE::LoadInterface*
 
     // Give the UI a way to poke the dialogue gate after live changes
     SFF_Settings::ApplyGateCallback = []() { ApplyFollowerDialogueGate(); };
+    SFF_Settings::FriendlyFireCallback = []() { ApplyFriendlyFire(); };
 
-    if (auto* papyrus = SKSE::GetPapyrusInterface())
-        papyrus->Register(RegisterPapyrus);
+    if (auto* papyrus = SKSE::GetPapyrusInterface()) papyrus->Register(RegisterPapyrus);
 
-    if (auto* messaging = SKSE::GetMessagingInterface())
-        messaging->RegisterListener(OnMessage);
+    if (auto* messaging = SKSE::GetMessagingInterface()) messaging->RegisterListener(OnMessage);
 
     // Register the in-game settings panel
     SFF_UI::Register();

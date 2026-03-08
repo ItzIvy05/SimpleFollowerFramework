@@ -181,6 +181,35 @@ void __stdcall SFF_UI::RenderSettings() {
 
     ImGuiMCP::Spacing();
 
+    // Friendly Fire Protection
+    {
+        bool ff = SFF_Settings::FriendlyFire;
+        if (ImGuiMCP::Checkbox("##FFCheck", &ff)) {
+            SFF_Settings::FriendlyFire = ff;
+            changed = true;
+            if (SFF_Settings::FriendlyFireCallback) SFF_Settings::FriendlyFireCallback();
+        }
+        ImGuiMCP::SameLine();
+        ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, ff ? ImGuiMCP::ImVec4{0.85f, 0.72f, 0.40f, 1.0f}
+                                                             : ImGuiMCP::ImVec4{0.90f, 0.90f, 0.90f, 1.0f});
+        ImGuiMCP::TextUnformatted("Friendly Fire Protection");
+        ImGuiMCP::PopStyleColor();
+        ImGuiMCP::SameLine();
+        HelpMarker(
+            "Your attacks, shouts, and destruction spells do no\n"
+            "damage to your followers while in combat.\n"
+        );
+        if (ff) {
+            ImGuiMCP::Indent(22.0f);
+            ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, ImGuiMCP::ImVec4{0.45f, 0.75f, 0.45f, 1.0f});
+            ImGuiMCP::TextUnformatted("Active - Followers Are Safe From Friendly Fire");
+            ImGuiMCP::PopStyleColor();
+            ImGuiMCP::Unindent(22.0f);
+        }
+    }
+
+    ImGuiMCP::Spacing();
+
     // INI File
     ImGuiMCP::SeparatorText("INI FILE");
 

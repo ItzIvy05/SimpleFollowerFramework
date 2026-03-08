@@ -118,6 +118,7 @@ namespace SFF_Settings {
         PerkSpecCount = 0;
         for (auto& p : PerkSpecs) { p.has = false; p.file.clear(); p.localID = 0; }
         FollowerEssential = false;
+        FriendlyFire = false;
         PerkListBuffer[0] = '\0';
 
         DWORD attrs = GetFileAttributesA(kIniPath);
@@ -163,6 +164,10 @@ namespace SFF_Settings {
         // bFollowerEssential
         FollowerEssential =
             GetPrivateProfileIntA("General", "bFollowerEssential", 0, kIniPath) != 0;
+
+        // bFriendlyFireProtection
+        FriendlyFire =
+            GetPrivateProfileIntA("General", "bFriendlyFireProtection", 0, kIniPath) != 0;
     }
 
     void Save() {
@@ -179,6 +184,7 @@ namespace SFF_Settings {
         writeInt("bFollowerOptionSelector", FollowerPerkOption);
         writeInt("iSpeechLevelsPerSlot",    SpeechLevelsPerSlot);
         writeInt("bFollowerEssential",  FollowerEssential ? 1 : 0);
+        writeInt("bFriendlyFireProtection", FriendlyFire ? 1 : 0);
         ParsePerkListIntoSpecs(PerkListBuffer);
         BuildPerkListBuffer();
         writeStr("sPerkForms", PerkListBuffer);
