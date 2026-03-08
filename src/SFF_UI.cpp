@@ -202,7 +202,7 @@ void __stdcall SFF_UI::RenderSettings() {
         if (ff) {
             ImGuiMCP::Indent(22.0f);
             ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, ImGuiMCP::ImVec4{0.45f, 0.75f, 0.45f, 1.0f});
-            ImGuiMCP::TextUnformatted("Active - Followers Are Safe From Friendly Fire");
+            ImGuiMCP::TextUnformatted("Active - Followers Are Safe From Friendly Fire While in Combat");
             ImGuiMCP::PopStyleColor();
             ImGuiMCP::Unindent(22.0f);
         }
