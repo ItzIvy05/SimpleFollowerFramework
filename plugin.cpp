@@ -325,13 +325,12 @@ namespace {
         return true;
     }
 
-    // ── Event sinks ───────────────────────────────────────────────────────────
+    // Event sinks
 
     class MenuSink final : public RE::BSTEventSink<RE::MenuOpenCloseEvent> {
     public:
         static MenuSink* GetSingleton() { static MenuSink s; return &s; }
-        RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* e,
-                                              RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
+        RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* e, RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
             if (e && e->menuName == "Dialogue Menu" && e->opening)
                 ApplyFollowerDialogueGate();
             return RE::BSEventNotifyControl::kContinue;
@@ -341,8 +340,7 @@ namespace {
     class ActivateSink final : public RE::BSTEventSink<RE::TESActivateEvent> {
     public:
         static ActivateSink* GetSingleton() { static ActivateSink s; return &s; }
-        RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* e,
-                                              RE::BSTEventSource<RE::TESActivateEvent>*) override {
+        RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* e, RE::BSTEventSource<RE::TESActivateEvent>*) override {
             if (!e) return RE::BSEventNotifyControl::kContinue;
             auto* player = RE::PlayerCharacter::GetSingleton();
             auto* activator  = e->actionRef.get();
