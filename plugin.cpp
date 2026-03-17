@@ -21,10 +21,12 @@ namespace {
     void ApplyFollowerDialogueGate();
 
     void UpdateEssentialForActor(RE::Actor* a);
+    void ApplySandbox();
 
     RE::TESGlobal* g_playerFollowerCount = nullptr;
     RE::TESGlobal* g_sffCanRecruitMore = nullptr;
     RE::TESGlobal* g_sffCurrentFollowerCount = nullptr;
+    RE::TESGlobal* g_sffFollowerSandbox = nullptr;
 
     std::unordered_map<RE::FormID, std::uint8_t> g_essOrig{};
 
@@ -167,6 +169,18 @@ namespace {
             if (form) g_sffCurrentFollowerCount = form->As<RE::TESGlobal>();
         }
         return g_sffCurrentFollowerCount;
+    }
+
+    RE::TESGlobal* GetSFFFollowerSandboxGlobal() {
+        if (!g_sffFollowerSandbox) {
+            auto* form = RE::TESForm::LookupByEditorID("SFF_FollowerSandbox");
+            if (form) g_sffFollowerSandbox = form->As<RE::TESGlobal>();
+        }
+        return g_sffFollowerSandbox;
+    }
+
+    void ApplySandbox() {
+        if (auto* glob = GetSFFFollowerSandboxGlobal()) glob->value = SFF_Settings::FollowerSandbox ? 1.0f : 0.0f;
     }
 
     // Perk checking
@@ -360,8 +374,7 @@ namespace {
             static MenuSink s;
             return &s;
         }
-        RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* e,
-                                              RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
+        RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* e, RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
             if (e && e->menuName == "Dialogue Menu" && e->opening) ApplyFollowerDialogueGate();
             return RE::BSEventNotifyControl::kContinue;
         }
@@ -411,6 +424,7 @@ namespace {
             SFF_Settings::Load(true);
             ApplyFollowerDialogueGate();
             ApplyFriendlyFire();
+            ApplySandbox();
         }
     }
 
@@ -427,6 +441,7 @@ extern "C" __declspec(dllexport) bool SKSEPlugin_Load(const SKSE::LoadInterface*
     // Give the UI a way to poke the dialogue gate after live changes
     SFF_Settings::ApplyGateCallback = []() { ApplyFollowerDialogueGate(); };
     SFF_Settings::FriendlyFireCallback = []() { ApplyFriendlyFire(); };
+    SFF_Settings::SandboxCallback = []() { ApplySandbox(); };
 
     if (auto* papyrus = SKSE::GetPapyrusInterface()) papyrus->Register(RegisterPapyrus);
 

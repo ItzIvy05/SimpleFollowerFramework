@@ -2,7 +2,7 @@
 
 #include "SFF_Settings.h"
 
-// Copied from SKSE Example File 
+// Copied from SKSE Example File
 // If you are wondering what these do check that on SKSE authors GitHub Page
 
 static void BeginDisabled(bool disabled) {
@@ -30,7 +30,6 @@ static void HelpMarker(const char* desc) {
         ImGuiMCP::EndTooltip();
     }
 }
-
 
 static bool StyledRadio(const char* label, const char* desc, bool selected) {
     ImGuiMCP::ImVec4 labelCol =
@@ -203,6 +202,36 @@ void __stdcall SFF_UI::RenderSettings() {
             ImGuiMCP::Indent(22.0f);
             ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, ImGuiMCP::ImVec4{0.45f, 0.75f, 0.45f, 1.0f});
             ImGuiMCP::TextUnformatted("Active - Followers Are Safe From Friendly Fire While in Combat");
+            ImGuiMCP::PopStyleColor();
+            ImGuiMCP::Unindent(22.0f);
+        }
+    }
+
+    ImGuiMCP::Spacing();
+
+    // Follower Sandbox
+    {
+        bool sb = SFF_Settings::FollowerSandbox;
+        if (ImGuiMCP::Checkbox("##SandboxCheck", &sb)) {
+            SFF_Settings::FollowerSandbox = sb;
+            changed = true;
+            if (SFF_Settings::SandboxCallback) SFF_Settings::SandboxCallback();
+        }
+        ImGuiMCP::SameLine();
+        ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, sb ? ImGuiMCP::ImVec4{0.85f, 0.72f, 0.40f, 1.0f}
+                                                             : ImGuiMCP::ImVec4{0.90f, 0.90f, 0.90f, 1.0f});
+        ImGuiMCP::TextUnformatted("Follower Sandbox");
+        ImGuiMCP::PopStyleColor();
+        ImGuiMCP::SameLine();
+
+        HelpMarker(
+            "Allows followers to sandbox (wander, sit, idle) in Dwellings and Habitation\n"
+            "Exmaple: Towns, Homes and anyother places marked as Dwellings and Habitation");
+
+        if (sb) {
+            ImGuiMCP::Indent(22.0f);
+            ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, ImGuiMCP::ImVec4{0.45f, 0.75f, 0.45f, 1.0f});
+            ImGuiMCP::TextUnformatted("Active - Followers Will Sandbox When Idle");
             ImGuiMCP::PopStyleColor();
             ImGuiMCP::Unindent(22.0f);
         }

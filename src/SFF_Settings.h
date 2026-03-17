@@ -23,10 +23,12 @@ namespace SFF_Settings {
     inline std::size_t PerkSpecCount = 0;
     inline bool FollowerEssential = false;
     inline bool FriendlyFire = false;
+    inline bool FollowerSandbox = false;
     inline char PerkListBuffer[2048]{};
     inline bool Loaded = false;
     inline void (*ApplyGateCallback)() = nullptr;
     inline void (*FriendlyFireCallback)() = nullptr;
+    inline void (*SandboxCallback)() = nullptr;
     void Load(bool force = false);
     void Save();
     void ParsePerkListIntoSpecs(const std::string& raw);
