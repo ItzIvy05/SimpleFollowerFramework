@@ -226,7 +226,7 @@ void __stdcall SFF_UI::RenderSettings() {
 
         HelpMarker(
             "Allows followers to sandbox (wander, sit, idle) in Dwellings and Habitation\n"
-            "Exmaple: Towns, Homes and anyother places marked as Dwellings and Habitation");
+            "Example: Towns, Homes and anyother places marked as Dwellings and Habitation");
 
         if (sb) {
             ImGuiMCP::Indent(22.0f);
