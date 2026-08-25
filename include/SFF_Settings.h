@@ -1,14 +1,14 @@
 #pragma once
 #include <windows.h>
+
 #include <array>
 #include <cstdint>
-#include <functional>
 #include <string>
 
 namespace SFF_Settings {
 
     constexpr std::size_t kMaxPerkSpecs = 8;
-    constexpr const char* kIniPath = "Data\\SKSE\\Plugins\\SimpleFollowerFramework.ini";
+    constexpr const char* kIniPath = R"(Data\SKSE\Plugins\SimpleFollowerFramework.ini)";
 
     struct PerkSpec {
         bool has = false;
@@ -29,6 +29,7 @@ namespace SFF_Settings {
     inline void (*ApplyGateCallback)() = nullptr;
     inline void (*FriendlyFireCallback)() = nullptr;
     inline void (*SandboxCallback)() = nullptr;
+
     void Load(bool force = false);
     void Save();
     void ParsePerkListIntoSpecs(const std::string& raw);

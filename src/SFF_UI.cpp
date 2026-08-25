@@ -2,9 +2,6 @@
 
 #include "SFF_Settings.h"
 
-// Copied from SKSE Example File
-// If you are wondering what these do check that on SKSE authors GitHub Page
-
 static void BeginDisabled(bool disabled) {
     if (disabled) {
         ImGuiMCP::PushStyleVar(ImGuiMCP::ImGuiStyleVar_Alpha, ImGuiMCP::GetStyle()->Alpha * 0.35f);
@@ -54,11 +51,9 @@ void __stdcall SFF_UI::RenderSettings() {
     SFF_Settings::Load();
     bool changed = false;
 
-    // Follower Limit Mode
     ImGuiMCP::SetWindowFontScale(0.93f);
     ImGuiMCP::SeparatorText("FOLLOWER LIMIT MODE");
 
-    // Option 0
     if (StyledRadio("Max Followers", "", SFF_Settings::FollowerPerkOption == 0)) {
         SFF_Settings::FollowerPerkOption = 0;
         changed = true;
@@ -85,7 +80,6 @@ void __stdcall SFF_UI::RenderSettings() {
 
     ImGuiMCP::Spacing();
 
-    // Option 1
     if (StyledRadio("Perk Gated", "", SFF_Settings::FollowerPerkOption == 1)) {
         SFF_Settings::FollowerPerkOption = 1;
         changed = true;
@@ -109,7 +103,6 @@ void __stdcall SFF_UI::RenderSettings() {
             SFF_Settings::ParsePerkListIntoSpecs(SFF_Settings::PerkListBuffer);
         }
 
-        // Copied Style code from SKSE Example (i know i know i copy too much but what u want me to do??? this is my first time making something like this)
         ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, SFF_Settings::PerkSpecCount > 0 ? ImGuiMCP::ImVec4{0.45f, 0.75f, 0.45f, 1.0f} : ImGuiMCP::ImVec4{0.50f, 0.50f, 0.50f, 1.0f});
         ImGuiMCP::Text("  %zu / %zu Perks Parsed", SFF_Settings::PerkSpecCount, SFF_Settings::kMaxPerkSpecs);
         ImGuiMCP::PopStyleColor();
@@ -119,7 +112,6 @@ void __stdcall SFF_UI::RenderSettings() {
 
     ImGuiMCP::Spacing();
 
-    // Option 2
     if (StyledRadio("Speech Scaled", "- Scales With Speechcraft Skill", SFF_Settings::FollowerPerkOption == 2)) {
         SFF_Settings::FollowerPerkOption = 2;
         changed = true;
@@ -146,7 +138,6 @@ void __stdcall SFF_UI::RenderSettings() {
 
     ImGuiMCP::Spacing();
 
-    // Follower Protection
     ImGuiMCP::SeparatorText("FOLLOWER PROTECTION");
 
     {
@@ -180,7 +171,6 @@ void __stdcall SFF_UI::RenderSettings() {
 
     ImGuiMCP::Spacing();
 
-    // Friendly Fire Protection
     {
         bool ff = SFF_Settings::FriendlyFire;
         if (ImGuiMCP::Checkbox("##FFCheck", &ff)) {
@@ -209,7 +199,6 @@ void __stdcall SFF_UI::RenderSettings() {
 
     ImGuiMCP::Spacing();
 
-    // Follower Sandbox
     {
         bool sb = SFF_Settings::FollowerSandbox;
         if (ImGuiMCP::Checkbox("##SandboxCheck", &sb)) {
@@ -239,7 +228,6 @@ void __stdcall SFF_UI::RenderSettings() {
 
     ImGuiMCP::Spacing();
 
-    // INI File
     ImGuiMCP::SeparatorText("INI FILE");
 
     if (ImGuiMCP::Button("Save Settings")) SFF_Settings::Save();

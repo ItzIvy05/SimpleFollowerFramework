@@ -3,11 +3,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 namespace SFF_Settings {
-
-    // Internal string helpers BTW nvm...
 
     static std::string TrimCopy(std::string s) {
         auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
@@ -61,8 +60,6 @@ namespace SFF_Settings {
         return true;
     }
 
-    // Public API - Its the api just yoink it from here or exmaple plugin..
-
     void ParsePerkListIntoSpecs(const std::string& raw) {
         PerkSpecCount = 0;
         for (auto& p : PerkSpecs) {
@@ -105,15 +102,15 @@ namespace SFF_Settings {
             std::snprintf(hex, sizeof(hex), "%08X", p.localID);
             result += p.file + "|" + hex;
         }
-        std::strncpy(PerkListBuffer, result.c_str(), sizeof(PerkListBuffer) - 1);
-        PerkListBuffer[sizeof(PerkListBuffer) - 1] = '\0';
+        const auto n = std::min(result.size(), sizeof(PerkListBuffer) - 1);
+        std::memcpy(PerkListBuffer, result.data(), n);
+        PerkListBuffer[n] = '\0';
     }
 
     void Load(bool force) {
         if (Loaded && !force) return;
         Loaded = true;
 
-        // Hard defaults (used if INI is missing)
         MaxExtraFollowers = 3;
         FollowerPerkOption = 0;
         SpeechLevelsPerSlot = 10;
@@ -134,21 +131,16 @@ namespace SFF_Settings {
             return;
         }
 
-        // iMaxFollowers
         int maxVal = GetPrivateProfileIntA("General", "iMaxFollowers", 4, kIniPath);
         maxVal = std::clamp(maxVal, 1, 8);
         MaxExtraFollowers = maxVal - 1;
 
-        // bFollowerOptionSelector
         int opt = GetPrivateProfileIntA("General", "iFollowerPerkOption", -1, kIniPath);
         if (opt < 0) opt = GetPrivateProfileIntA("General", "bFollowerOptionSelector", 0, kIniPath);
         FollowerPerkOption = std::clamp(opt, 0, 2);
 
-        // iSpeechLevelsPerSlot
         int sl = GetPrivateProfileIntA("General", "iSpeechLevelsPerSlot", 10, kIniPath);
         SpeechLevelsPerSlot = std::max(sl, 1);
-
-        // sPerkForms
 
         char buf[2048]{};
         GetPrivateProfileStringA("General", "sPerkForms", "", buf, static_cast<DWORD>(sizeof(buf)), kIniPath);
@@ -165,13 +157,10 @@ namespace SFF_Settings {
         ParsePerkListIntoSpecs(perkList);
         BuildPerkListBuffer();
 
-        // bFollowerEssential
         FollowerEssential = GetPrivateProfileIntA("General", "bFollowerEssential", 0, kIniPath) != 0;
 
-        // bFriendlyFireProtection
         FriendlyFire = GetPrivateProfileIntA("General", "bFriendlyFireProtection", 0, kIniPath) != 0;
 
-        // bFollowerSandbox
         FollowerSandbox = GetPrivateProfileIntA("General", "bFollowerSandbox", 0, kIniPath) != 0;
     }
 
