@@ -61,6 +61,7 @@ namespace SFF_Settings {
     }
 
     void ParsePerkListIntoSpecs(const std::string& raw) {
+        ++PerkListGeneration;
         PerkSpecCount = 0;
         for (auto& p : PerkSpecs) {
             p.has = false;
@@ -123,6 +124,7 @@ namespace SFF_Settings {
         FollowerEssential = false;
         FriendlyFire = false;
         FollowerSandbox = false;
+        FollowerCrossfire = false;
         PerkListBuffer[0] = '\0';
 
         DWORD attrs = GetFileAttributesA(kIniPath);
@@ -162,6 +164,8 @@ namespace SFF_Settings {
         FriendlyFire = GetPrivateProfileIntA("General", "bFriendlyFireProtection", 0, kIniPath) != 0;
 
         FollowerSandbox = GetPrivateProfileIntA("General", "bFollowerSandbox", 0, kIniPath) != 0;
+
+        FollowerCrossfire = GetPrivateProfileIntA("General", "bFollowerCrossfireProtection", 0, kIniPath) != 0;
     }
 
     void Save() {
@@ -179,6 +183,7 @@ namespace SFF_Settings {
         writeInt("bFollowerEssential", FollowerEssential ? 1 : 0);
         writeInt("bFriendlyFireProtection", FriendlyFire ? 1 : 0);
         writeInt("bFollowerSandbox", FollowerSandbox ? 1 : 0);
+        writeInt("bFollowerCrossfireProtection", FollowerCrossfire ? 1 : 0);
         ParsePerkListIntoSpecs(PerkListBuffer);
         BuildPerkListBuffer();
         writeStr("sPerkForms", PerkListBuffer);

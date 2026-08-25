@@ -12,11 +12,15 @@ namespace {
     constexpr std::uint32_t kFirstExtraAlias = 1;
     constexpr std::uint32_t kExtraAliasCount = 7;
     constexpr std::int32_t kBaseFollowers = 1;
-    constexpr std::int32_t kMaxExtras = 7;
-    constexpr const char* kRequiredPluginName = "Simple Follower Framework.esp";
+    constexpr std::int32_t kMaxExtras = static_cast<std::int32_t>(kExtraAliasCount);
+    constexpr std::size_t kMaxFollowers = kExtraAliasCount + 1;
 
     RE::TESQuest* g_sffQuest = nullptr;
     RE::TESQuest* g_dialogueFollower = nullptr;
+    RE::BGSRefAlias* g_vanillaAlias = nullptr;
+    RE::BGSRefAlias* g_mirrorAlias = nullptr;
+    std::array<RE::BGSRefAlias*, kExtraAliasCount> g_extraAliases{};
+
     RE::FormID g_trackedPrimary = 0;
 
     RE::TESGlobal* g_playerFollowerCount = nullptr;
@@ -25,15 +29,20 @@ namespace {
     RE::TESGlobal* g_sffFollowerSandbox = nullptr;
     RE::SpellItem* g_friendlyFireSpell = nullptr;
 
+    std::array<RE::BGSPerk*, SFF_Settings::kMaxPerkSpecs> g_perkCache{};
+    std::uint32_t g_perkCacheGeneration = 0;
+    bool g_perkCacheValid = false;
+
     std::unordered_map<RE::FormID, std::uint8_t> g_essOrig{};
+    std::unordered_set<RE::FormID> g_crossfireGranted{};
 
     void SyncState();
 
     void SetupLog() {
         auto folder = SKSE::log::log_directory();
         if (!folder) return;
-        auto path = *folder / "SimpleFollowerFramework.log";
-        auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path.string(), true);
+        auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(
+            (*folder / "SimpleFollowerFramework.log").string(), true);
         auto log = std::make_shared<spdlog::logger>("log", std::move(sink));
         log->set_level(spdlog::level::info);
         log->flush_on(spdlog::level::info);
@@ -41,13 +50,16 @@ namespace {
         spdlog::set_pattern("[%H:%M:%S.%e] %v");
     }
 
-    RE::TESQuest* GetSFFQuest() {
-        if (!g_sffQuest) {
-            auto* form = RE::TESForm::LookupByEditorID("SFF_FollowerQuest");
-            if (form) g_sffQuest = form->As<RE::TESQuest>();
+    template <class T>
+    T* LookupCached(T*& cache, std::string_view editorID) {
+        if (!cache) {
+            auto* form = RE::TESForm::LookupByEditorID(editorID);
+            if (form) cache = form->As<T>();
         }
-        return g_sffQuest;
+        return cache;
     }
+
+    RE::TESQuest* GetSFFQuest() { return LookupCached(g_sffQuest, "SFF_FollowerQuest"sv); }
 
     RE::TESQuest* GetDialogueFollower() {
         if (!g_dialogueFollower) {
@@ -57,58 +69,60 @@ namespace {
         return g_dialogueFollower;
     }
 
-    RE::BGSRefAlias* GetAlias(RE::TESQuest* quest, std::uint32_t aliasID) {
-        if (!quest) return nullptr;
-        for (auto* base : quest->aliases) {
-            if (base && base->aliasID == aliasID) return static_cast<RE::BGSRefAlias*>(base);
+    bool EnsureAliases() {
+        if (g_vanillaAlias && g_mirrorAlias) return true;
+
+        auto* sff = GetSFFQuest();
+        auto* df = GetDialogueFollower();
+        if (!sff || !df) return false;
+
+        for (auto* base : df->aliases) {
+            if (base && base->aliasID == kVanillaFollowerAlias) {
+                g_vanillaAlias = static_cast<RE::BGSRefAlias*>(base);
+                break;
+            }
         }
-        return nullptr;
+        for (auto* base : sff->aliases) {
+            if (!base) continue;
+            if (base->aliasID == kMirrorAlias) {
+                g_mirrorAlias = static_cast<RE::BGSRefAlias*>(base);
+            } else if (base->aliasID >= kFirstExtraAlias && base->aliasID < kFirstExtraAlias + kExtraAliasCount) {
+                g_extraAliases[base->aliasID - kFirstExtraAlias] = static_cast<RE::BGSRefAlias*>(base);
+            }
+        }
+        return g_vanillaAlias && g_mirrorAlias;
     }
 
-    RE::Actor* AliasActor(RE::TESQuest* quest, std::uint32_t aliasID) {
-        auto* alias = GetAlias(quest, aliasID);
-        return alias ? alias->GetActorReference() : nullptr;
+    RE::Actor* AliasActor(RE::BGSRefAlias* alias) { return alias ? alias->GetActorReference() : nullptr; }
+
+    void FillAlias(RE::BGSRefAlias* alias, RE::Actor* actor) {
+        if (alias && actor) alias->ForceRefTo(actor);
     }
 
-    void FillAlias(RE::TESQuest* quest, std::uint32_t aliasID, RE::Actor* actor) {
-        if (!quest || !actor) return;
-        quest->ForceRefIntoAlias(aliasID, actor);
-    }
-
-    void ClearAlias(RE::TESQuest* quest, std::uint32_t aliasID) {
-        auto* alias = GetAlias(quest, aliasID);
+    void ClearAlias(RE::BGSRefAlias* alias) {
         if (!alias) return;
-        auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
-        if (!vm) return;
-        auto* policy = vm->GetObjectHandlePolicy();
-        if (!policy) return;
-        const auto handle = policy->GetHandleForObject(RE::BGSRefAlias::VMTYPEID, alias);
-        if (handle == policy->EmptyHandle()) return;
-        auto* args = RE::MakeFunctionArguments();
-        RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
-        vm->DispatchMethodCall(handle, "ReferenceAlias"sv, "Clear"sv, args, callback);
+        using func_t = void (*)(RE::BSScript::Internal::VirtualMachine*, std::uint32_t, RE::BGSRefAlias*);
+        static REL::Relocation<func_t> clearFn{ RELOCATION_ID(54632, 55286) };
+        clearFn(RE::BSScript::Internal::VirtualMachine::GetSingleton(), 0, alias);
+        if (auto* still = alias->GetActorReference()) {
+            logger::info("clear FAILED: alias{} still holds {:08X}", alias->aliasID, still->GetFormID());
+        }
     }
 
-    RE::Actor* PrimaryFollower() { return AliasActor(GetDialogueFollower(), kVanillaFollowerAlias); }
+    RE::Actor* PrimaryFollower() { return AliasActor(g_vanillaAlias); }
 
     std::int32_t ExtraSlotOf(RE::Actor* actor) {
         if (!actor) return -1;
-        auto* sff = GetSFFQuest();
-        if (!sff) return -1;
         for (std::uint32_t i = 0; i < kExtraAliasCount; ++i) {
-            if (AliasActor(sff, kFirstExtraAlias + i) == actor) {
-                return static_cast<std::int32_t>(kFirstExtraAlias + i);
-            }
+            if (AliasActor(g_extraAliases[i]) == actor) return static_cast<std::int32_t>(i);
         }
         return -1;
     }
 
     std::int32_t FirstFreeExtraSlot() {
-        auto* sff = GetSFFQuest();
-        if (!sff) return -1;
         for (std::uint32_t i = 0; i < kExtraAliasCount; ++i) {
-            auto* a = AliasActor(sff, kFirstExtraAlias + i);
-            if (!a || a->IsDead()) return static_cast<std::int32_t>(kFirstExtraAlias + i);
+            auto* a = AliasActor(g_extraAliases[i]);
+            if (!a || a->IsDead()) return static_cast<std::int32_t>(i);
         }
         return -1;
     }
@@ -118,22 +132,21 @@ namespace {
         return actor == PrimaryFollower() || ExtraSlotOf(actor) >= 0;
     }
 
-    RE::TESFaction* GetFaction(std::string_view editorID) {
-        auto* form = RE::TESForm::LookupByEditorID(editorID);
-        return form ? form->As<RE::TESFaction>() : nullptr;
-    }
-
-    RE::TESGlobal* LookupGlobal(RE::TESGlobal*& cache, std::string_view editorID) {
-        if (!cache) {
-            auto* form = RE::TESForm::LookupByEditorID(editorID);
-            if (form) cache = form->As<RE::TESGlobal>();
-        }
-        return cache;
+    void RestoreEssentialBase(RE::TESNPC* base, std::uint8_t bits) {
+        if (!base) return;
+        auto& flags = base->actorData.actorBaseFlags;
+        if (bits & 1)
+            flags.set(RE::ACTOR_BASE_DATA::Flag::kEssential);
+        else
+            flags.reset(RE::ACTOR_BASE_DATA::Flag::kEssential);
+        if (bits & 2)
+            flags.set(RE::ACTOR_BASE_DATA::Flag::kProtected);
+        else
+            flags.reset(RE::ACTOR_BASE_DATA::Flag::kProtected);
     }
 
     void UpdateEssentialForActor(RE::Actor* a, bool wantFollower) {
-        if (!a) return;
-        if (a == RE::PlayerCharacter::GetSingleton()) return;
+        if (!a || a == RE::PlayerCharacter::GetSingleton()) return;
         auto* base = a->GetActorBase();
         if (!base) return;
 
@@ -143,11 +156,10 @@ namespace {
 
         if (want) {
             if (it == g_essOrig.end()) {
-                const bool e = base->actorData.actorBaseFlags.any(RE::ACTOR_BASE_DATA::Flag::kEssential);
-                const bool p = base->actorData.actorBaseFlags.any(RE::ACTOR_BASE_DATA::Flag::kProtected);
+                auto& flags = base->actorData.actorBaseFlags;
                 std::uint8_t bits = 0;
-                if (e) bits |= 1;
-                if (p) bits |= 2;
+                if (flags.any(RE::ACTOR_BASE_DATA::Flag::kEssential)) bits |= 1;
+                if (flags.any(RE::ACTOR_BASE_DATA::Flag::kProtected)) bits |= 2;
                 g_essOrig.emplace(id, bits);
             }
             base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kEssential);
@@ -156,25 +168,13 @@ namespace {
         }
 
         if (it != g_essOrig.end()) {
-            const std::uint8_t bits = it->second;
-            if (bits & 1)
-                base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kEssential);
-            else
-                base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kEssential);
-            if (bits & 2)
-                base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kProtected);
-            else
-                base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kProtected);
+            RestoreEssentialBase(base, it->second);
             g_essOrig.erase(it);
         }
     }
 
     RE::SpellItem* GetFriendlyFireSpell() {
-        if (!g_friendlyFireSpell) {
-            auto* form = RE::TESForm::LookupByEditorID("IvyCompanionsSafeSpell");
-            if (form) g_friendlyFireSpell = form->As<RE::SpellItem>();
-        }
-        return g_friendlyFireSpell;
+        return LookupCached(g_friendlyFireSpell, "IvyCompanionsSafeSpell"sv);
     }
 
     void ApplyFriendlyFire() {
@@ -189,27 +189,68 @@ namespace {
             player->RemoveSpell(spell);
     }
 
+    void ApplyCrossfireForActor(RE::Actor* a, bool want) {
+        auto* spell = GetFriendlyFireSpell();
+        if (!a || !spell) return;
+
+        const auto id = a->GetFormID();
+        const bool tracked = g_crossfireGranted.contains(id);
+        if (want == tracked) return;
+
+        if (want) {
+            if (!a->HasSpell(spell)) a->AddSpell(spell);
+            g_crossfireGranted.insert(id);
+        } else {
+            if (a->HasSpell(spell)) a->RemoveSpell(spell);
+            g_crossfireGranted.erase(id);
+        }
+    }
+
+    void RevokeStaleCrossfire(const RE::FormID* liveActors, std::size_t liveCount) {
+        if (g_crossfireGranted.empty()) return;
+        auto* spell = GetFriendlyFireSpell();
+        for (auto it = g_crossfireGranted.begin(); it != g_crossfireGranted.end();) {
+            const auto id = *it;
+            if (std::find(liveActors, liveActors + liveCount, id) != liveActors + liveCount) {
+                ++it;
+                continue;
+            }
+            auto* form = RE::TESForm::LookupByID(id);
+            auto* a = form ? form->As<RE::Actor>() : nullptr;
+            if (a && spell && a->HasSpell(spell)) a->RemoveSpell(spell);
+            it = g_crossfireGranted.erase(it);
+        }
+    }
+
     void ApplySandbox() {
-        if (auto* glob = LookupGlobal(g_sffFollowerSandbox, "SFF_FollowerSandbox")) {
+        if (auto* glob = LookupCached(g_sffFollowerSandbox, "SFF_FollowerSandbox"sv)) {
             glob->value = SFF_Settings::FollowerSandbox ? 1.0f : 0.0f;
         }
     }
 
-    bool HasPerkFromSpec(const std::string& file, std::uint32_t localID) {
-        auto* player = RE::PlayerCharacter::GetSingleton();
-        if (!player) return false;
+    void RebuildPerkCache() {
+        g_perkCache.fill(nullptr);
         auto* dh = RE::TESDataHandler::GetSingleton();
-        if (!dh) return false;
-        auto* form = dh->LookupForm(localID, file);
-        auto* perk = form ? form->As<RE::BGSPerk>() : nullptr;
-        return perk && player->HasPerk(perk);
+        if (dh) {
+            for (std::size_t i = 0; i < SFF_Settings::PerkSpecCount && i < g_perkCache.size(); ++i) {
+                const auto& p = SFF_Settings::PerkSpecs[i];
+                if (!p.has) continue;
+                auto* form = dh->LookupForm(p.localID, p.file);
+                if (form) g_perkCache[i] = form->As<RE::BGSPerk>();
+            }
+        }
+        g_perkCacheGeneration = SFF_Settings::PerkListGeneration;
+        g_perkCacheValid = true;
     }
 
-    std::int32_t CountOwnedPerksFromList() {
+    std::int32_t CountOwnedPerks() {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) return 0;
+        if (!g_perkCacheValid || g_perkCacheGeneration != SFF_Settings::PerkListGeneration) RebuildPerkCache();
+
         std::int32_t owned = 0;
-        for (std::size_t i = 0; i < SFF_Settings::PerkSpecCount; ++i) {
-            const auto& p = SFF_Settings::PerkSpecs[i];
-            if (p.has && HasPerkFromSpec(p.file, p.localID)) ++owned;
+        for (std::size_t i = 0; i < SFF_Settings::PerkSpecCount && i < g_perkCache.size(); ++i) {
+            if (g_perkCache[i] && player->HasPerk(g_perkCache[i])) ++owned;
         }
         return owned;
     }
@@ -222,89 +263,93 @@ namespace {
             static_cast<std::int32_t>(player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeech));
         const std::int32_t levelsPerSlot =
             (SFF_Settings::SpeechLevelsPerSlot > 0) ? SFF_Settings::SpeechLevelsPerSlot : 10;
-        return std::clamp(kBaseFollowers + (speech / levelsPerSlot), 1, kBaseFollowers + kMaxExtras);
+        return std::clamp(kBaseFollowers + (speech / levelsPerSlot), kBaseFollowers, kBaseFollowers + kMaxExtras);
     }
 
     std::int32_t GetTotalFollowerCap() {
-        if (SFF_Settings::FollowerPerkOption == 0) {
-            const int extras = std::clamp(static_cast<int>(SFF_Settings::MaxExtraFollowers), 0, kMaxExtras);
-            return std::clamp(kBaseFollowers + extras, 1, kBaseFollowers + kMaxExtras);
+        switch (SFF_Settings::FollowerPerkOption) {
+        case 0: {
+            const auto extras = std::clamp(SFF_Settings::MaxExtraFollowers, 0, kMaxExtras);
+            return kBaseFollowers + extras;
         }
-        if (SFF_Settings::FollowerPerkOption == 1) {
-            return std::clamp(kBaseFollowers + CountOwnedPerksFromList(), 1, kBaseFollowers + kMaxExtras);
+        case 1:
+            return std::clamp(kBaseFollowers + CountOwnedPerks(), kBaseFollowers, kBaseFollowers + kMaxExtras);
+        default:
+            return GetSpeechBasedFollowerCap();
         }
-        return GetSpeechBasedFollowerCap();
     }
 
     void SyncState() {
-        auto* sff = GetSFFQuest();
-        auto* df = GetDialogueFollower();
-        if (!sff || !df) return;
+        if (!EnsureAliases()) return;
 
         auto* primary = PrimaryFollower();
         if (primary && primary->IsDead()) primary = nullptr;
 
-        if (AliasActor(sff, kMirrorAlias) != primary) {
+        if (AliasActor(g_mirrorAlias) != primary) {
             if (primary)
-                FillAlias(sff, kMirrorAlias, primary);
+                FillAlias(g_mirrorAlias, primary);
             else
-                ClearAlias(sff, kMirrorAlias);
+                ClearAlias(g_mirrorAlias);
         }
 
-        std::unordered_set<RE::FormID> live{};
-        std::int32_t count = 0;
+        std::array<RE::FormID, kMaxFollowers> liveActors{};
+        std::array<RE::FormID, kMaxFollowers> liveBases{};
+        std::size_t liveCount = 0;
+        std::size_t baseCount = 0;
 
+        const bool wantCrossfire = SFF_Settings::FollowerCrossfire;
+
+        auto track = [&](RE::Actor* a) {
+            UpdateEssentialForActor(a, true);
+            ApplyCrossfireForActor(a, wantCrossfire);
+            liveActors[liveCount++] = a->GetFormID();
+            if (auto* base = a->GetActorBase()) liveBases[baseCount++] = base->GetFormID();
+        };
+
+        std::int32_t count = 0;
         if (primary) {
             ++count;
-            UpdateEssentialForActor(primary, true);
-            if (auto* base = primary->GetActorBase()) live.insert(base->GetFormID());
+            track(primary);
         }
 
         for (std::uint32_t i = 0; i < kExtraAliasCount; ++i) {
-            auto* a = AliasActor(sff, kFirstExtraAlias + i);
+            auto* a = AliasActor(g_extraAliases[i]);
             if (!a) continue;
-            if (a->IsDead()) {
-                ClearAlias(sff, kFirstExtraAlias + i);
+            if (a->IsDead() || a == primary || !a->IsPlayerTeammate()) {
+                logger::info("release slot{}: {:08X} (dead={} dup={} teammate={})", i + kFirstExtraAlias,
+                             a->GetFormID(), a->IsDead(), a == primary, a->IsPlayerTeammate());
+                UpdateEssentialForActor(a, false);
+                ApplyCrossfireForActor(a, false);
+                ClearAlias(g_extraAliases[i]);
+                a->EvaluatePackage();
                 continue;
             }
             ++count;
-            UpdateEssentialForActor(a, true);
-            if (auto* base = a->GetActorBase()) live.insert(base->GetFormID());
+            track(a);
         }
 
-        std::vector<RE::FormID> stale{};
-        for (const auto& [baseID, bits] : g_essOrig) {
-            if (!live.contains(baseID)) stale.push_back(baseID);
-        }
-        for (auto baseID : stale) {
-            auto it = g_essOrig.find(baseID);
-            if (it == g_essOrig.end()) continue;
-            auto* form = RE::TESForm::LookupByID(baseID);
-            auto* base = form ? form->As<RE::TESNPC>() : nullptr;
-            if (base) {
-                const std::uint8_t bits = it->second;
-                if (bits & 1)
-                    base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kEssential);
-                else
-                    base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kEssential);
-                if (bits & 2)
-                    base->actorData.actorBaseFlags.set(RE::ACTOR_BASE_DATA::Flag::kProtected);
-                else
-                    base->actorData.actorBaseFlags.reset(RE::ACTOR_BASE_DATA::Flag::kProtected);
+        RevokeStaleCrossfire(liveActors.data(), liveCount);
+
+        for (auto it = g_essOrig.begin(); it != g_essOrig.end();) {
+            if (std::find(liveBases.data(), liveBases.data() + baseCount, it->first) !=
+                liveBases.data() + baseCount) {
+                ++it;
+                continue;
             }
-            g_essOrig.erase(baseID);
+            auto* form = RE::TESForm::LookupByID(it->first);
+            RestoreEssentialBase(form ? form->As<RE::TESNPC>() : nullptr, it->second);
+            it = g_essOrig.erase(it);
         }
 
-        const auto cap = GetTotalFollowerCap();
-        const bool canRecruitMore = (count < cap);
+        const bool canRecruitMore = (count < GetTotalFollowerCap());
 
-        if (auto* glob = LookupGlobal(g_playerFollowerCount, "PlayerFollowerCount")) {
+        if (auto* glob = LookupCached(g_playerFollowerCount, "PlayerFollowerCount"sv)) {
             glob->value = canRecruitMore ? 0.0f : 1.0f;
         }
-        if (auto* glob = LookupGlobal(g_sffCanRecruitMore, "SFF_CanRecruitMore")) {
+        if (auto* glob = LookupCached(g_sffCanRecruitMore, "SFF_CanRecruitMore"sv)) {
             glob->value = canRecruitMore ? 1.0f : 0.0f;
         }
-        if (auto* glob = LookupGlobal(g_sffCurrentFollowerCount, "SFF_CurrentFollowerCount")) {
+        if (auto* glob = LookupCached(g_sffCurrentFollowerCount, "SFF_CurrentFollowerCount"sv)) {
             glob->value = static_cast<float>(count);
         }
     }
@@ -317,26 +362,21 @@ namespace {
         return ref ? ref->As<RE::Actor>() : nullptr;
     }
 
-    void SwapIntoVanillaAlias(RE::Actor* actor) {
-        auto* sff = GetSFFQuest();
-        auto* df = GetDialogueFollower();
-        if (!sff || !df || !actor) return;
+    void SwapIntoVanillaAlias(RE::Actor* actor, std::int32_t slot) {
+        if (!actor || slot < 0 || !EnsureAliases()) return;
 
         auto* current = PrimaryFollower();
         if (current == actor) return;
 
-        const auto slot = ExtraSlotOf(actor);
-        if (slot < 0) return;
-
         if (current)
-            FillAlias(sff, static_cast<std::uint32_t>(slot), current);
+            FillAlias(g_extraAliases[slot], current);
         else
-            ClearAlias(sff, static_cast<std::uint32_t>(slot));
+            ClearAlias(g_extraAliases[slot]);
 
-        FillAlias(df, kVanillaFollowerAlias, actor);
+        FillAlias(g_vanillaAlias, actor);
         g_trackedPrimary = actor->GetFormID();
-        logger::info("swap: {:08X} slot{} -> vanilla alias (displaced {:08X})", actor->GetFormID(), slot,
-                     current ? current->GetFormID() : 0);
+        logger::info("swap: {:08X} slot{} -> vanilla alias (displaced {:08X})", actor->GetFormID(),
+                     slot + kFirstExtraAlias, current ? current->GetFormID() : 0);
 
         actor->EvaluatePackage();
         if (current) current->EvaluatePackage();
@@ -344,10 +384,17 @@ namespace {
         SyncState();
     }
 
+    void OnFollowerActivated(RE::Actor* actor) {
+        if (!EnsureAliases()) return;
+        const auto slot = actor ? ExtraSlotOf(actor) : -1;
+        if (slot >= 0)
+            SwapIntoVanillaAlias(actor, slot);
+        else
+            SyncState();
+    }
+
     void ReconcileVanillaAlias() {
-        auto* sff = GetSFFQuest();
-        auto* df = GetDialogueFollower();
-        if (!sff || !df) return;
+        if (!EnsureAliases()) return;
 
         auto* cur = PrimaryFollower();
         const RE::FormID curID = cur ? cur->GetFormID() : 0;
@@ -359,10 +406,10 @@ namespace {
             if (prev && prev != cur && !prev->IsDead() && prev->IsPlayerTeammate() && ExtraSlotOf(prev) < 0) {
                 const auto slot = FirstFreeExtraSlot();
                 if (slot >= 0) {
-                    FillAlias(sff, static_cast<std::uint32_t>(slot), prev);
+                    FillAlias(g_extraAliases[slot], prev);
                     prev->EvaluatePackage();
-                    logger::info("hire: {:08X} took vanilla alias, moved {:08X} -> slot{}",
-                                 cur ? cur->GetFormID() : 0, prev->GetFormID(), slot);
+                    logger::info("hire: {:08X} took vanilla alias, moved {:08X} -> slot{}", curID,
+                                 prev->GetFormID(), slot + kFirstExtraAlias);
                 }
             }
         }
@@ -371,81 +418,9 @@ namespace {
         SyncState();
     }
 
-    bool FileExistsA(const char* path) {
-        DWORD attrs = GetFileAttributesA(path);
-        return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
-    }
-
     [[noreturn]] void MessageAndExit(const char* msg) {
         MessageBoxA(nullptr, msg, "SimpleFollowerFramework.dll", MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);
         ExitProcess(1);
-    }
-
-    bool IsRequiredPluginLoaded() {
-        auto* dh = RE::TESDataHandler::GetSingleton();
-        if (!dh) return false;
-        if (dh->LookupLoadedModByName(kRequiredPluginName)) return true;
-        return RE::TESForm::LookupByEditorID("SFF_FollowerQuest") != nullptr;
-    }
-
-    bool PluginsTxtExplicitlyDisablesRequiredPlugin() {
-        char localAppData[MAX_PATH]{};
-        DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", localAppData, static_cast<DWORD>(sizeof(localAppData)));
-        if (n == 0 || n >= sizeof(localAppData)) return false;
-
-        const char* dirs[] = {"Skyrim Special Edition", "Skyrim Special Edition GOG", "Skyrim VR", "Skyrim"};
-
-        for (auto* d : dirs) {
-            std::string path = std::string(localAppData) + "\\" + d + "\\plugins.txt";
-            if (!FileExistsA(path.c_str())) continue;
-
-            std::ifstream in(path);
-            if (!in.is_open()) continue;
-
-            std::string line;
-            while (std::getline(in, line)) {
-                for (const char* tok : {";", "#", "//"}) {
-                    auto p = line.find(tok);
-                    if (p != std::string::npos) line = line.substr(0, p);
-                }
-                while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) line.pop_back();
-                if (line.empty()) continue;
-
-                bool enabled = (line.front() == '*');
-                if (enabled) line.erase(line.begin());
-                while (!line.empty() && std::isspace(static_cast<unsigned char>(line.front())))
-                    line.erase(line.begin());
-
-                if (line.size() == std::strlen(kRequiredPluginName)) {
-                    bool same = true;
-                    for (std::size_t i = 0; i < line.size(); ++i) {
-                        if (std::tolower(static_cast<unsigned char>(line[i])) !=
-                            std::tolower(static_cast<unsigned char>(kRequiredPluginName[i]))) {
-                            same = false;
-                            break;
-                        }
-                    }
-                    if (same) return !enabled;
-                }
-            }
-        }
-        return false;
-    }
-
-    void EarlyPreflightCheck() {
-        std::string espPath = std::string("Data\\") + kRequiredPluginName;
-        if (!FileExistsA(espPath.c_str())) {
-            MessageAndExit(
-                "Missing required file:\n\n"
-                "Data\\Simple Follower Framework.esp\n"
-                "Install it (or fix your mod manager / VFS), then relaunch.");
-        }
-        if (PluginsTxtExplicitlyDisablesRequiredPlugin()) {
-            MessageAndExit(
-                "Required plugin is disabled:\n"
-                "Simple Follower Framework.esp\n"
-                "Enable it in your load order, then relaunch.");
-        }
     }
 
     class MenuSink final : public RE::BSTEventSink<RE::MenuOpenCloseEvent> {
@@ -457,16 +432,10 @@ namespace {
         RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* e,
                                               RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
             if (e && e->menuName == RE::DialogueMenu::MENU_NAME) {
-                if (e->opening) {
-                    auto* speaker = CurrentDialogueSpeaker();
-                    logger::info("dialogue open: speaker={:08X} slot={} primary={:08X}",
-                                 speaker ? speaker->GetFormID() : 0, speaker ? ExtraSlotOf(speaker) : -1,
-                                 PrimaryFollower() ? PrimaryFollower()->GetFormID() : 0);
-                    if (speaker && ExtraSlotOf(speaker) >= 0) SwapIntoVanillaAlias(speaker);
-                    SyncState();
-                } else {
+                if (e->opening)
+                    OnFollowerActivated(CurrentDialogueSpeaker());
+                else
                     ReconcileVanillaAlias();
-                }
             }
             return RE::BSEventNotifyControl::kContinue;
         }
@@ -481,17 +450,16 @@ namespace {
         RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* e,
                                               RE::BSTEventSource<RE::TESActivateEvent>*) override {
             if (!e) return RE::BSEventNotifyControl::kContinue;
+
             auto* player = RE::PlayerCharacter::GetSingleton();
             auto* activator = e->actionRef.get();
             auto* activated = e->objectActivated.get();
-            if (!player || !activator || !activated) return RE::BSEventNotifyControl::kContinue;
-            if (activator != player) return RE::BSEventNotifyControl::kContinue;
+            if (!player || activator != player || !activated) return RE::BSEventNotifyControl::kContinue;
 
             auto* actor = activated->As<RE::Actor>();
             if (!actor || actor == player) return RE::BSEventNotifyControl::kContinue;
 
-            if (ExtraSlotOf(actor) >= 0) SwapIntoVanillaAlias(actor);
-            SyncState();
+            OnFollowerActivated(actor);
             return RE::BSEventNotifyControl::kContinue;
         }
     };
@@ -522,47 +490,55 @@ namespace {
     void ResetCaches() {
         g_sffQuest = nullptr;
         g_dialogueFollower = nullptr;
+        g_vanillaAlias = nullptr;
+        g_mirrorAlias = nullptr;
+        g_extraAliases.fill(nullptr);
         g_playerFollowerCount = nullptr;
         g_sffCanRecruitMore = nullptr;
         g_sffCurrentFollowerCount = nullptr;
         g_sffFollowerSandbox = nullptr;
         g_friendlyFireSpell = nullptr;
         g_trackedPrimary = 0;
-    }
-
-    void EnsureQuestRunning() {
-        auto* sff = GetSFFQuest();
-        if (sff && !sff->IsRunning()) sff->Start();
+        g_perkCache.fill(nullptr);
+        g_perkCacheValid = false;
+        g_essOrig.clear();
+        g_crossfireGranted.clear();
     }
 
     void OnMessage(SKSE::MessagingInterface::Message* msg) {
         if (!msg) return;
 
-        if (msg->type == SKSE::MessagingInterface::kDataLoaded) {
-            if (!IsRequiredPluginLoaded()) {
+        switch (msg->type) {
+        case SKSE::MessagingInterface::kDataLoaded:
+            if (!RE::TESForm::LookupByEditorID("SFF_FollowerQuest")) {
                 MessageAndExit(
-                    "Missing required plugin in load order:\n"
-                    "Simple Follower Framework.esp\n"
+                    "Simple Follower Framework.esp is missing or not active.\n\n"
                     "Enable it in your load order, then relaunch.");
             }
             Install();
-        } else if (msg->type == SKSE::MessagingInterface::kPostLoadGame ||
-                   msg->type == SKSE::MessagingInterface::kNewGame) {
+            break;
+
+        case SKSE::MessagingInterface::kPostLoadGame:
+        case SKSE::MessagingInterface::kNewGame:
             ResetCaches();
             SFF_Settings::Load(true);
-            EnsureQuestRunning();
-            if (auto* primary = PrimaryFollower()) g_trackedPrimary = primary->GetFormID();
+            if (auto* sff = GetSFFQuest(); sff && !sff->IsRunning()) sff->Start();
+            if (EnsureAliases()) {
+                if (auto* primary = PrimaryFollower()) g_trackedPrimary = primary->GetFormID();
+            }
             SyncState();
             ApplyFriendlyFire();
             ApplySandbox();
+            break;
+
+        default:
+            break;
         }
     }
 }
 
 SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     SetupLog();
-    EarlyPreflightCheck();
-
     SKSE::Init(skse);
 
     SFF_Settings::Load();
@@ -570,6 +546,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     SFF_Settings::ApplyGateCallback = []() { SyncState(); };
     SFF_Settings::FriendlyFireCallback = []() { ApplyFriendlyFire(); };
     SFF_Settings::SandboxCallback = []() { ApplySandbox(); };
+    SFF_Settings::CrossfireCallback = []() { SyncState(); };
 
     if (auto* messaging = SKSE::GetMessagingInterface()) messaging->RegisterListener(OnMessage);
 

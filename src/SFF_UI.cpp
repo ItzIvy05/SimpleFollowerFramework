@@ -147,8 +147,7 @@ void __stdcall SFF_UI::RenderSettings() {
             changed = true;
         }
         ImGuiMCP::SameLine();
-        ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, ess ? ImGuiMCP::ImVec4{0.85f, 0.72f, 0.40f, 1.0f}
-                                                              : ImGuiMCP::ImVec4{0.90f, 0.90f, 0.90f, 1.0f});
+        ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, ess ? ImGuiMCP::ImVec4{0.85f, 0.72f, 0.40f, 1.0f} : ImGuiMCP::ImVec4{0.90f, 0.90f, 0.90f, 1.0f});
         ImGuiMCP::TextUnformatted("Make Followers Essential\n");
         ImGuiMCP::PopStyleColor();
         ImGuiMCP::SameLine();
@@ -179,8 +178,7 @@ void __stdcall SFF_UI::RenderSettings() {
             if (SFF_Settings::FriendlyFireCallback) SFF_Settings::FriendlyFireCallback();
         }
         ImGuiMCP::SameLine();
-        ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, ff ? ImGuiMCP::ImVec4{0.85f, 0.72f, 0.40f, 1.0f}
-                                                             : ImGuiMCP::ImVec4{0.90f, 0.90f, 0.90f, 1.0f});
+        ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, ff ? ImGuiMCP::ImVec4{0.85f, 0.72f, 0.40f, 1.0f} : ImGuiMCP::ImVec4{0.90f, 0.90f, 0.90f, 1.0f});
         ImGuiMCP::TextUnformatted("Friendly Fire Protection");
         ImGuiMCP::PopStyleColor();
         ImGuiMCP::SameLine();
@@ -200,6 +198,34 @@ void __stdcall SFF_UI::RenderSettings() {
     ImGuiMCP::Spacing();
 
     {
+        bool cf = SFF_Settings::FollowerCrossfire;
+        if (ImGuiMCP::Checkbox("##CFCheck", &cf)) {
+            SFF_Settings::FollowerCrossfire = cf;
+            changed = true;
+            if (SFF_Settings::CrossfireCallback) SFF_Settings::CrossfireCallback();
+        }
+        ImGuiMCP::SameLine();
+        ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, cf ? ImGuiMCP::ImVec4{0.85f, 0.72f, 0.40f, 1.0f} : ImGuiMCP::ImVec4{0.90f, 0.90f, 0.90f, 1.0f});
+        ImGuiMCP::TextUnformatted("Follower Crossfire Protection");
+        ImGuiMCP::PopStyleColor();
+        ImGuiMCP::SameLine();
+        HelpMarker(
+            "Followers cannot damage each other.\n"
+            "Their attacks, shouts and spells do no damage to\n"
+            "anyone else in your party.\n"
+            "Does not change how they damage enemies.");
+        if (cf) {
+            ImGuiMCP::Indent(22.0f);
+            ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, ImGuiMCP::ImVec4{0.45f, 0.75f, 0.45f, 1.0f});
+            ImGuiMCP::TextUnformatted("Active - Followers Cannot Hurt Each Other");
+            ImGuiMCP::PopStyleColor();
+            ImGuiMCP::Unindent(22.0f);
+        }
+    }
+
+    ImGuiMCP::Spacing();
+
+    {
         bool sb = SFF_Settings::FollowerSandbox;
         if (ImGuiMCP::Checkbox("##SandboxCheck", &sb)) {
             SFF_Settings::FollowerSandbox = sb;
@@ -207,8 +233,7 @@ void __stdcall SFF_UI::RenderSettings() {
             if (SFF_Settings::SandboxCallback) SFF_Settings::SandboxCallback();
         }
         ImGuiMCP::SameLine();
-        ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, sb ? ImGuiMCP::ImVec4{0.85f, 0.72f, 0.40f, 1.0f}
-                                                             : ImGuiMCP::ImVec4{0.90f, 0.90f, 0.90f, 1.0f});
+        ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, sb ? ImGuiMCP::ImVec4{0.85f, 0.72f, 0.40f, 1.0f} : ImGuiMCP::ImVec4{0.90f, 0.90f, 0.90f, 1.0f});
         ImGuiMCP::TextUnformatted("Follower Sandbox");
         ImGuiMCP::PopStyleColor();
         ImGuiMCP::SameLine();

@@ -21,14 +21,17 @@ namespace SFF_Settings {
     inline std::int32_t SpeechLevelsPerSlot = 10;
     inline std::array<PerkSpec, kMaxPerkSpecs> PerkSpecs{};
     inline std::size_t PerkSpecCount = 0;
+    inline std::uint32_t PerkListGeneration = 0;
     inline bool FollowerEssential = false;
     inline bool FriendlyFire = false;
     inline bool FollowerSandbox = false;
+    inline bool FollowerCrossfire = false;
     inline char PerkListBuffer[2048]{};
     inline bool Loaded = false;
     inline void (*ApplyGateCallback)() = nullptr;
     inline void (*FriendlyFireCallback)() = nullptr;
     inline void (*SandboxCallback)() = nullptr;
+    inline void (*CrossfireCallback)() = nullptr;
 
     void Load(bool force = false);
     void Save();
