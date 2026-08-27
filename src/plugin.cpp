@@ -28,6 +28,7 @@ namespace {
     RE::TESGlobal* g_sffCurrentFollowerCount = nullptr;
     RE::TESGlobal* g_sffFollowerSandbox = nullptr;
     RE::SpellItem* g_friendlyFireSpell = nullptr;
+    RE::TESFaction* g_potentialFollower = nullptr;
 
     std::array<RE::BGSPerk*, SFF_Settings::kMaxPerkSpecs> g_perkCache{};
     std::uint32_t g_perkCacheGeneration = 0;
@@ -384,13 +385,64 @@ namespace {
         SyncState();
     }
 
+    bool IsOrphanedFollower(RE::Actor* actor) {
+        if (!actor || actor == RE::PlayerCharacter::GetSingleton()) return false;
+        if (!actor->IsPlayerTeammate() || actor->IsDead()) return false;
+        auto* fac = LookupCached(g_potentialFollower, "PotentialFollowerFaction"sv);
+        if (!fac || !actor->IsInFaction(fac)) return false;
+        if (actor == PrimaryFollower() || ExtraSlotOf(actor) >= 0) return false;
+        return true;
+    }
+
+    bool AdoptOrphan(RE::Actor* actor) {
+        if (!IsOrphanedFollower(actor)) return false;
+
+        if (!PrimaryFollower()) {
+            FillAlias(g_vanillaAlias, actor);
+            g_trackedPrimary = actor->GetFormID();
+            actor->EvaluatePackage();
+            logger::info("adopt: {:08X} -> vanilla alias", actor->GetFormID());
+            return true;
+        }
+
+        const auto slot = FirstFreeExtraSlot();
+        if (slot >= 0) {
+            FillAlias(g_extraAliases[slot], actor);
+            actor->EvaluatePackage();
+            logger::info("adopt: {:08X} -> slot{}", actor->GetFormID(), slot + kFirstExtraAlias);
+            return true;
+        }
+
+        actor->GetActorRuntimeData().boolBits.reset(RE::Actor::BOOL_BITS::kPlayerTeammate);
+        actor->EvaluatePackage();
+        logger::info("release: {:08X} orphaned with no free slot", actor->GetFormID());
+        return false;
+    }
+
+    void RecoverLegacyAliases() {
+        auto* df = GetDialogueFollower();
+        if (!df) return;
+        for (const auto& entry : df->refAliasMap) {
+            if (entry.first < 2 || entry.first > 8) continue;
+            auto ref = entry.second.get();
+            auto* a = ref ? ref->As<RE::Actor>() : nullptr;
+            if (!a) continue;
+            logger::info("legacy: found {:08X} in retired alias {}", a->GetFormID(), entry.first);
+            AdoptOrphan(a);
+        }
+    }
+
     void OnFollowerActivated(RE::Actor* actor) {
         if (!EnsureAliases()) return;
         const auto slot = actor ? ExtraSlotOf(actor) : -1;
-        if (slot >= 0)
+        if (slot >= 0) {
             SwapIntoVanillaAlias(actor, slot);
-        else
-            SyncState();
+            return;
+        }
+        if (AdoptOrphan(actor)) {
+            if (const auto s2 = ExtraSlotOf(actor); s2 >= 0) SwapIntoVanillaAlias(actor, s2);
+        }
+        SyncState();
     }
 
     void ReconcileVanillaAlias() {
@@ -434,6 +486,8 @@ namespace {
             if (e && e->menuName == RE::DialogueMenu::MENU_NAME) {
                 if (e->opening)
                     OnFollowerActivated(CurrentDialogueSpeaker());
+                else if (auto* task = SKSE::GetTaskInterface())
+                    task->AddTask([]() { ReconcileVanillaAlias(); });
                 else
                     ReconcileVanillaAlias();
             }
@@ -498,6 +552,7 @@ namespace {
         g_sffCurrentFollowerCount = nullptr;
         g_sffFollowerSandbox = nullptr;
         g_friendlyFireSpell = nullptr;
+        g_potentialFollower = nullptr;
         g_trackedPrimary = 0;
         g_perkCache.fill(nullptr);
         g_perkCacheValid = false;
@@ -526,6 +581,7 @@ namespace {
             if (EnsureAliases()) {
                 if (auto* primary = PrimaryFollower()) g_trackedPrimary = primary->GetFormID();
             }
+            RecoverLegacyAliases();
             SyncState();
             ApplyFriendlyFire();
             ApplySandbox();
