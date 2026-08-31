@@ -14,6 +14,7 @@ namespace {
     constexpr std::int32_t kBaseFollowers = 1;
     constexpr std::int32_t kMaxExtras = static_cast<std::int32_t>(kExtraAliasCount);
     constexpr std::size_t kMaxFollowers = kExtraAliasCount + 1;
+    constexpr float kLeftBehindDistance = 2500.0f;
 
     RE::TESQuest* g_sffQuest = nullptr;
     RE::TESQuest* g_dialogueFollower = nullptr;
@@ -376,8 +377,6 @@ namespace {
 
         FillAlias(g_vanillaAlias, actor);
         g_trackedPrimary = actor->GetFormID();
-        logger::info("swap: {:08X} slot{} -> vanilla alias (displaced {:08X})", actor->GetFormID(),
-                     slot + kFirstExtraAlias, current ? current->GetFormID() : 0);
 
         actor->EvaluatePackage();
         if (current) current->EvaluatePackage();
@@ -426,8 +425,8 @@ namespace {
             if (entry.first < 2 || entry.first > 8) continue;
             auto ref = entry.second.get();
             auto* a = ref ? ref->As<RE::Actor>() : nullptr;
-            if (!a) continue;
-            logger::info("legacy: found {:08X} in retired alias {}", a->GetFormID(), entry.first);
+            if (!a || !IsOrphanedFollower(a)) continue;
+            logger::info("legacy: recovering {:08X} from retired alias {}", a->GetFormID(), entry.first);
             AdoptOrphan(a);
         }
     }
@@ -440,9 +439,33 @@ namespace {
             return;
         }
         if (AdoptOrphan(actor)) {
-            if (const auto s2 = ExtraSlotOf(actor); s2 >= 0) SwapIntoVanillaAlias(actor, s2);
+            if (const auto s2 = ExtraSlotOf(actor); s2 >= 0) {
+                SwapIntoVanillaAlias(actor, s2);
+                return;
+            }
         }
         SyncState();
+    }
+
+    void GatherFollowersAfterTravel() {
+        if (!EnsureAliases()) return;
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) return;
+
+        auto bring = [&](RE::Actor* a) {
+            if (!a || a->IsDead()) return;
+            if (a->AsActorValueOwner()->GetActorValue(RE::ActorValue::kWaitingForPlayer) > 0.0f) return;
+
+            const bool otherCell = a->GetParentCell() != player->GetParentCell();
+            if (!otherCell && a->GetDistance(player) < kLeftBehindDistance) return;
+
+            a->MoveTo(player);
+            a->EvaluatePackage();
+            logger::info("gather: pulled {:08X} to player after travel (otherCell={})", a->GetFormID(), otherCell);
+        };
+
+        bring(PrimaryFollower());
+        for (std::uint32_t i = 0; i < kExtraAliasCount; ++i) bring(AliasActor(g_extraAliases[i]));
     }
 
     void ReconcileVanillaAlias() {
@@ -459,10 +482,11 @@ namespace {
                 const auto slot = FirstFreeExtraSlot();
                 if (slot >= 0) {
                     FillAlias(g_extraAliases[slot], prev);
-                    prev->EvaluatePackage();
-                    logger::info("hire: {:08X} took vanilla alias, moved {:08X} -> slot{}", curID,
-                                 prev->GetFormID(), slot + kFirstExtraAlias);
+                } else {
+                    prev->GetActorRuntimeData().boolBits.reset(RE::Actor::BOOL_BITS::kPlayerTeammate);
+                    logger::info("release: {:08X} displaced with no free slot", prev->GetFormID());
                 }
+                prev->EvaluatePackage();
             }
         }
 
@@ -533,11 +557,28 @@ namespace {
         }
     };
 
+    class FastTravelSink final : public RE::BSTEventSink<RE::TESFastTravelEndEvent> {
+    public:
+        static FastTravelSink* GetSingleton() {
+            static FastTravelSink s;
+            return &s;
+        }
+        RE::BSEventNotifyControl ProcessEvent(const RE::TESFastTravelEndEvent*,
+                                              RE::BSTEventSource<RE::TESFastTravelEndEvent>*) override {
+            if (auto* task = SKSE::GetTaskInterface())
+                task->AddTask([]() { GatherFollowersAfterTravel(); });
+            else
+                GatherFollowersAfterTravel();
+            return RE::BSEventNotifyControl::kContinue;
+        }
+    };
+
     void Install() {
         if (auto* ui = RE::UI::GetSingleton()) ui->AddEventSink<RE::MenuOpenCloseEvent>(MenuSink::GetSingleton());
         if (auto* events = RE::ScriptEventSourceHolder::GetSingleton()) {
             events->AddEventSink<RE::TESActivateEvent>(ActivateSink::GetSingleton());
             events->AddEventSink<RE::TESDeathEvent>(DeathSink::GetSingleton());
+            events->AddEventSink<RE::TESFastTravelEndEvent>(FastTravelSink::GetSingleton());
         }
     }
 
