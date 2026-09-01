@@ -39,6 +39,7 @@ namespace {
     std::unordered_set<RE::FormID> g_crossfireGranted{};
 
     void SyncState();
+    RE::Actor* ActiveDialogueSpeaker();
 
     void SetupLog() {
         auto folder = SKSE::log::log_directory();
@@ -345,8 +346,13 @@ namespace {
 
         const bool canRecruitMore = (count < GetTotalFollowerCap());
 
+        auto* speaker = ActiveDialogueSpeaker();
+        const bool speakerAlreadyFollows =
+            speaker && (speaker->IsPlayerTeammate() || IsManagedFollower(speaker));
+        const bool offerHire = canRecruitMore && !speakerAlreadyFollows;
+
         if (auto* glob = LookupCached(g_playerFollowerCount, "PlayerFollowerCount"sv)) {
-            glob->value = canRecruitMore ? 0.0f : 1.0f;
+            glob->value = offerHire ? 0.0f : 1.0f;
         }
         if (auto* glob = LookupCached(g_sffCanRecruitMore, "SFF_CanRecruitMore"sv)) {
             glob->value = canRecruitMore ? 1.0f : 0.0f;
@@ -354,6 +360,13 @@ namespace {
         if (auto* glob = LookupCached(g_sffCurrentFollowerCount, "SFF_CurrentFollowerCount"sv)) {
             glob->value = static_cast<float>(count);
         }
+    }
+
+    RE::Actor* ActiveDialogueSpeaker() {
+        auto* mtm = RE::MenuTopicManager::GetSingleton();
+        if (!mtm) return nullptr;
+        auto ref = mtm->speaker.get();
+        return ref ? ref->As<RE::Actor>() : nullptr;
     }
 
     RE::Actor* CurrentDialogueSpeaker() {
