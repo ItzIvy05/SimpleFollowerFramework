@@ -1,51 +1,53 @@
 #include <Windows.h>
-
 #include <spdlog/sinks/basic_file_sink.h>
 
 #include "SFF_Settings.h"
 #include "SFF_UI.h"
 
 namespace {
+
     constexpr RE::FormID kDialogueFollowerID = 0x000750BA;
     constexpr std::uint32_t kVanillaFollowerAlias = 0;
-    constexpr std::uint32_t kMirrorAlias = 0;
-    constexpr std::uint32_t kFirstExtraAlias = 1;
-    constexpr std::uint32_t kExtraAliasCount = 7;
+    constexpr std::size_t kSlotCount = 8;
     constexpr std::int32_t kBaseFollowers = 1;
-    constexpr std::int32_t kMaxExtras = static_cast<std::int32_t>(kExtraAliasCount);
-    constexpr std::size_t kMaxFollowers = kExtraAliasCount + 1;
+    constexpr std::int32_t kMaxExtras = static_cast<std::int32_t>(kSlotCount) - 1;
     constexpr float kLeftBehindDistance = 2500.0f;
+
+    constexpr std::uint32_t kSerializationID = 'SFFW';
+    constexpr std::uint32_t kRosterRecord = 'ROST';
+    constexpr std::uint32_t kRosterVersion = 2;
+    constexpr std::uint32_t kLegacyRosterVersion = 1;
 
     RE::TESQuest* g_sffQuest = nullptr;
     RE::TESQuest* g_dialogueFollower = nullptr;
     RE::BGSRefAlias* g_vanillaAlias = nullptr;
-    RE::BGSRefAlias* g_mirrorAlias = nullptr;
-    std::array<RE::BGSRefAlias*, kExtraAliasCount> g_extraAliases{};
+    std::array<RE::BGSRefAlias*, kSlotCount> g_slots{};
+    std::array<RE::FormID, kSlotCount> g_slotRoster{};
 
-    RE::FormID g_trackedPrimary = 0;
+    RE::ObjectRefHandle g_dialogueTarget;
+    std::recursive_mutex g_stateLock;
 
     RE::TESGlobal* g_playerFollowerCount = nullptr;
-    RE::TESGlobal* g_sffCanRecruitMore = nullptr;
-    RE::TESGlobal* g_sffCurrentFollowerCount = nullptr;
     RE::TESGlobal* g_sffFollowerSandbox = nullptr;
     RE::SpellItem* g_friendlyFireSpell = nullptr;
     RE::TESFaction* g_potentialFollower = nullptr;
+    RE::TESFaction* g_potentialHireling = nullptr;
+    RE::TESFaction* g_dismissedFollower = nullptr;
+    RE::TESFaction* g_currentFollower = nullptr;
+    RE::TESFaction* g_playerFollower = nullptr;
+    RE::TESFaction* g_wiFollowerComment = nullptr;
+    RE::TESFaction* g_sffFollowerFaction = nullptr;
 
     std::array<RE::BGSPerk*, SFF_Settings::kMaxPerkSpecs> g_perkCache{};
     std::uint32_t g_perkCacheGeneration = 0;
     bool g_perkCacheValid = false;
 
     std::unordered_map<RE::FormID, std::uint8_t> g_essOrig{};
-    std::unordered_set<RE::FormID> g_crossfireGranted{};
-
-    void SyncState();
-    RE::Actor* ActiveDialogueSpeaker();
 
     void SetupLog() {
         auto folder = SKSE::log::log_directory();
         if (!folder) return;
-        auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(
-            (*folder / "SimpleFollowerFramework.log").string(), true);
+        auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>((*folder / "SimpleFollowerFramework.log").string(), true);
         auto log = std::make_shared<spdlog::logger>("log", std::move(sink));
         log->set_level(spdlog::level::info);
         log->flush_on(spdlog::level::info);
@@ -53,8 +55,7 @@ namespace {
         spdlog::set_pattern("[%H:%M:%S.%e] %v");
     }
 
-    template <class T>
-    T* LookupCached(T*& cache, std::string_view editorID) {
+    template <class T> T* LookupCached(T*& cache, std::string_view editorID) {
         if (!cache) {
             auto* form = RE::TESForm::LookupByEditorID(editorID);
             if (form) cache = form->As<T>();
@@ -73,7 +74,7 @@ namespace {
     }
 
     bool EnsureAliases() {
-        if (g_vanillaAlias && g_mirrorAlias) return true;
+        if (g_vanillaAlias && g_slots[0]) return true;
 
         auto* sff = GetSFFQuest();
         auto* df = GetDialogueFollower();
@@ -86,20 +87,18 @@ namespace {
             }
         }
         for (auto* base : sff->aliases) {
-            if (!base) continue;
-            if (base->aliasID == kMirrorAlias) {
-                g_mirrorAlias = static_cast<RE::BGSRefAlias*>(base);
-            } else if (base->aliasID >= kFirstExtraAlias && base->aliasID < kFirstExtraAlias + kExtraAliasCount) {
-                g_extraAliases[base->aliasID - kFirstExtraAlias] = static_cast<RE::BGSRefAlias*>(base);
-            }
+            if (base && base->aliasID < kSlotCount) g_slots[base->aliasID] = static_cast<RE::BGSRefAlias*>(base);
         }
-        return g_vanillaAlias && g_mirrorAlias;
+        return g_vanillaAlias && g_slots[0];
     }
 
     RE::Actor* AliasActor(RE::BGSRefAlias* alias) { return alias ? alias->GetActorReference() : nullptr; }
 
     void FillAlias(RE::BGSRefAlias* alias, RE::Actor* actor) {
-        if (alias && actor) alias->ForceRefTo(actor);
+        if (!alias || !actor) return;
+        using func_t = void (*)(RE::BSScript::Internal::VirtualMachine*, std::uint32_t, RE::BGSRefAlias*, RE::TESObjectREFR*);
+        static REL::Relocation<func_t> forceFn{ RELOCATION_ID(54634, 55288) };
+        forceFn(RE::BSScript::Internal::VirtualMachine::GetSingleton(), 0, alias, actor);
     }
 
     void ClearAlias(RE::BGSRefAlias* alias) {
@@ -107,32 +106,34 @@ namespace {
         using func_t = void (*)(RE::BSScript::Internal::VirtualMachine*, std::uint32_t, RE::BGSRefAlias*);
         static REL::Relocation<func_t> clearFn{ RELOCATION_ID(54632, 55286) };
         clearFn(RE::BSScript::Internal::VirtualMachine::GetSingleton(), 0, alias);
-        if (auto* still = alias->GetActorReference()) {
-            logger::info("clear FAILED: alias{} still holds {:08X}", alias->aliasID, still->GetFormID());
-        }
     }
 
-    RE::Actor* PrimaryFollower() { return AliasActor(g_vanillaAlias); }
-
-    std::int32_t ExtraSlotOf(RE::Actor* actor) {
+    std::int32_t SlotOf(RE::Actor* actor) {
         if (!actor) return -1;
-        for (std::uint32_t i = 0; i < kExtraAliasCount; ++i) {
-            if (AliasActor(g_extraAliases[i]) == actor) return static_cast<std::int32_t>(i);
+        for (std::size_t i = 0; i < kSlotCount; ++i) {
+            if (AliasActor(g_slots[i]) == actor) return static_cast<std::int32_t>(i);
         }
         return -1;
     }
 
-    std::int32_t FirstFreeExtraSlot() {
-        for (std::uint32_t i = 0; i < kExtraAliasCount; ++i) {
-            auto* a = AliasActor(g_extraAliases[i]);
-            if (!a || a->IsDead()) return static_cast<std::int32_t>(i);
-        }
-        return -1;
+    bool VanillaDismissed(RE::Actor* a) {
+        auto* fac = LookupCached(g_dismissedFollower, "DismissedFollowerFaction"sv);
+        return a && fac && a->IsInFaction(fac);
     }
 
-    bool IsManagedFollower(RE::Actor* actor) {
-        if (!actor) return false;
-        return actor == PrimaryFollower() || ExtraSlotOf(actor) >= 0;
+    bool Recruitable(RE::Actor* a) {
+        if (!a) return false;
+        auto* potential = LookupCached(g_potentialFollower, "PotentialFollowerFaction"sv);
+        auto* hireling = LookupCached(g_potentialHireling, "PotentialHireling"sv);
+        return (potential && a->IsInFaction(potential)) || (hireling && a->IsInFaction(hireling));
+    }
+
+    std::int32_t FirstFreeSlot() {
+        for (std::size_t i = 0; i < kSlotCount; ++i) {
+            auto* a = AliasActor(g_slots[i]);
+            if (!a || a->IsDead() || VanillaDismissed(a)) return static_cast<std::int32_t>(i);
+        }
+        return -1;
     }
 
     void RestoreEssentialBase(RE::TESNPC* base, std::uint8_t bits) {
@@ -176,9 +177,28 @@ namespace {
         }
     }
 
-    RE::SpellItem* GetFriendlyFireSpell() {
-        return LookupCached(g_friendlyFireSpell, "IvyCompanionsSafeSpell"sv);
+    void SetFollowerFactions(RE::Actor* a, bool want) {
+        if (!a) return;
+        RE::TESFaction* factions[3] = { LookupCached(g_currentFollower, "CurrentFollowerFaction"sv), LookupCached(g_playerFollower, "PlayerFollowerFaction"sv), LookupCached(g_wiFollowerComment, "WIFollowerCommentFaction"sv) };
+        for (auto* fac : factions) {
+            if (!fac) continue;
+            const bool has = a->IsInFaction(fac);
+            if (want && !has)
+                a->AddToFaction(fac, 0);
+            else if (!want && has)
+                a->RemoveFromFaction(fac);
+        }
     }
+
+    void ReleaseAllEssential() {
+        for (const auto& entry : g_essOrig) {
+            auto* form = RE::TESForm::LookupByID(entry.first);
+            RestoreEssentialBase(form ? form->As<RE::TESNPC>() : nullptr, entry.second);
+        }
+        g_essOrig.clear();
+    }
+
+    RE::SpellItem* GetFriendlyFireSpell() { return LookupCached(g_friendlyFireSpell, "IvyCompanionsSafeSpell"sv); }
 
     void ApplyFriendlyFire() {
         auto* player = RE::PlayerCharacter::GetSingleton();
@@ -195,34 +215,26 @@ namespace {
     void ApplyCrossfireForActor(RE::Actor* a, bool want) {
         auto* spell = GetFriendlyFireSpell();
         if (!a || !spell) return;
-
-        const auto id = a->GetFormID();
-        const bool tracked = g_crossfireGranted.contains(id);
-        if (want == tracked) return;
-
-        if (want) {
-            if (!a->HasSpell(spell)) a->AddSpell(spell);
-            g_crossfireGranted.insert(id);
-        } else {
-            if (a->HasSpell(spell)) a->RemoveSpell(spell);
-            g_crossfireGranted.erase(id);
-        }
+        if (want && !a->HasSpell(spell))
+            a->AddSpell(spell);
+        else if (!want && a->HasSpell(spell))
+            a->RemoveSpell(spell);
     }
 
-    void RevokeStaleCrossfire(const RE::FormID* liveActors, std::size_t liveCount) {
-        if (g_crossfireGranted.empty()) return;
-        auto* spell = GetFriendlyFireSpell();
-        for (auto it = g_crossfireGranted.begin(); it != g_crossfireGranted.end();) {
-            const auto id = *it;
-            if (std::find(liveActors, liveActors + liveCount, id) != liveActors + liveCount) {
-                ++it;
-                continue;
-            }
-            auto* form = RE::TESForm::LookupByID(id);
-            auto* a = form ? form->As<RE::Actor>() : nullptr;
-            if (a && spell && a->HasSpell(spell)) a->RemoveSpell(spell);
-            it = g_crossfireGranted.erase(it);
-        }
+    RE::Actor* ResolveActorForm(RE::FormID id) {
+        if (!id) return nullptr;
+        auto* form = RE::TESForm::LookupByID(id);
+        return form ? form->As<RE::Actor>() : nullptr;
+    }
+
+    void SetVanillaDialogueHidden(RE::Actor* a, bool hidden) {
+        auto* fac = LookupCached(g_sffFollowerFaction, "SFF_FollowerFaction"sv);
+        if (!a || !fac) return;
+        const bool tagged = a->IsInFaction(fac);
+        if (hidden && !tagged)
+            a->AddToFaction(fac, 0);
+        else if (!hidden && tagged)
+            a->RemoveFromFaction(fac);
     }
 
     void ApplySandbox() {
@@ -262,10 +274,8 @@ namespace {
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player) return kBaseFollowers;
 
-        const auto speech =
-            static_cast<std::int32_t>(player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeech));
-        const std::int32_t levelsPerSlot =
-            (SFF_Settings::SpeechLevelsPerSlot > 0) ? SFF_Settings::SpeechLevelsPerSlot : 10;
+        const auto speech = static_cast<std::int32_t>(player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeech));
+        const std::int32_t levelsPerSlot = (SFF_Settings::SpeechLevelsPerSlot > 0) ? SFF_Settings::SpeechLevelsPerSlot : 10;
         return std::clamp(kBaseFollowers + (speech / levelsPerSlot), kBaseFollowers, kBaseFollowers + kMaxExtras);
     }
 
@@ -282,234 +292,197 @@ namespace {
         }
     }
 
-    void SyncState() {
+    RE::Actor* ActiveDialogueSpeaker() {
+        if (auto ref = g_dialogueTarget.get()) return ref->As<RE::Actor>();
+        auto* ui = RE::UI::GetSingleton();
+        if (!ui || !ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) return nullptr;
+        auto* mtm = RE::MenuTopicManager::GetSingleton();
+        if (!mtm) return nullptr;
+        auto ref = mtm->speaker.get();
+        return ref ? ref->As<RE::Actor>() : nullptr;
+    }
+
+    void ReleaseRetiredSlots() {
+        std::lock_guard<std::recursive_mutex> lock(g_stateLock);
         if (!EnsureAliases()) return;
 
-        auto* primary = PrimaryFollower();
-        if (primary && primary->IsDead()) primary = nullptr;
+        for (std::size_t i = 0; i < kSlotCount; ++i) {
+            auto* a = AliasActor(g_slots[i]);
+            if (!a || (!a->IsDead() && !VanillaDismissed(a))) continue;
 
-        if (AliasActor(g_mirrorAlias) != primary) {
-            if (primary)
-                FillAlias(g_mirrorAlias, primary);
-            else
-                ClearAlias(g_mirrorAlias);
+            ClearAlias(g_slots[i]);
+            g_slotRoster[i] = 0;
+            if (AliasActor(g_vanillaAlias) == a) ClearAlias(g_vanillaAlias);
+            SetFollowerFactions(a, false);
+            UpdateEssentialForActor(a, false);
+            ApplyCrossfireForActor(a, false);
+            SetVanillaDialogueHidden(a, false);
+            a->EvaluatePackage();
         }
+    }
 
-        std::array<RE::FormID, kMaxFollowers> liveActors{};
-        std::array<RE::FormID, kMaxFollowers> liveBases{};
-        std::size_t liveCount = 0;
-        std::size_t baseCount = 0;
+    void SyncState() {
+        std::lock_guard<std::recursive_mutex> lock(g_stateLock);
+        if (!EnsureAliases()) return;
+        if (g_sffQuest && !g_sffQuest->IsRunning()) g_sffQuest->Start();
 
+        ReleaseRetiredSlots();
+
+        auto* borrowed = AliasActor(g_vanillaAlias);
         const bool wantCrossfire = SFF_Settings::FollowerCrossfire;
+        std::int32_t count = 0;
 
-        auto track = [&](RE::Actor* a) {
+        for (std::size_t i = 0; i < kSlotCount; ++i) {
+            auto* a = AliasActor(g_slots[i]);
+            if (!a) {
+                g_slotRoster[i] = 0;
+                continue;
+            }
+
+            ++count;
+            g_slotRoster[i] = a->GetFormID();
+            SetFollowerFactions(a, true);
             UpdateEssentialForActor(a, true);
             ApplyCrossfireForActor(a, wantCrossfire);
-            liveActors[liveCount++] = a->GetFormID();
-            if (auto* base = a->GetActorBase()) liveBases[baseCount++] = base->GetFormID();
-        };
-
-        std::int32_t count = 0;
-        if (primary) {
-            ++count;
-            track(primary);
+            SetVanillaDialogueHidden(a, a != borrowed);
         }
-
-        for (std::uint32_t i = 0; i < kExtraAliasCount; ++i) {
-            auto* a = AliasActor(g_extraAliases[i]);
-            if (!a) continue;
-            if (a->IsDead() || a == primary || !a->IsPlayerTeammate()) {
-                logger::info("release slot{}: {:08X} (dead={} dup={} teammate={})", i + kFirstExtraAlias,
-                             a->GetFormID(), a->IsDead(), a == primary, a->IsPlayerTeammate());
-                UpdateEssentialForActor(a, false);
-                ApplyCrossfireForActor(a, false);
-                ClearAlias(g_extraAliases[i]);
-                a->EvaluatePackage();
-                continue;
-            }
-            ++count;
-            track(a);
-        }
-
-        RevokeStaleCrossfire(liveActors.data(), liveCount);
-
-        for (auto it = g_essOrig.begin(); it != g_essOrig.end();) {
-            if (std::find(liveBases.data(), liveBases.data() + baseCount, it->first) !=
-                liveBases.data() + baseCount) {
-                ++it;
-                continue;
-            }
-            auto* form = RE::TESForm::LookupByID(it->first);
-            RestoreEssentialBase(form ? form->As<RE::TESNPC>() : nullptr, it->second);
-            it = g_essOrig.erase(it);
-        }
-
-        const bool canRecruitMore = (count < GetTotalFollowerCap());
 
         auto* speaker = ActiveDialogueSpeaker();
-        const bool speakerAlreadyFollows =
-            speaker && (speaker->IsPlayerTeammate() || IsManagedFollower(speaker));
-        const bool offerHire = canRecruitMore && !speakerAlreadyFollows;
+        const bool speakerFollows = speaker && (speaker->IsPlayerTeammate() || SlotOf(speaker) >= 0);
+        const bool offerHire = (count < GetTotalFollowerCap()) && !speakerFollows && Recruitable(speaker);
 
         if (auto* glob = LookupCached(g_playerFollowerCount, "PlayerFollowerCount"sv)) {
-            glob->value = offerHire ? 0.0f : 1.0f;
+            glob->value = offerHire ? 0.0f : ((count > 0) ? 1.0f : 0.0f);
         }
-        if (auto* glob = LookupCached(g_sffCanRecruitMore, "SFF_CanRecruitMore"sv)) {
-            glob->value = canRecruitMore ? 1.0f : 0.0f;
-        }
-        if (auto* glob = LookupCached(g_sffCurrentFollowerCount, "SFF_CurrentFollowerCount"sv)) {
-            glob->value = static_cast<float>(count);
-        }
-    }
-
-    RE::Actor* ActiveDialogueSpeaker() {
-        auto* mtm = RE::MenuTopicManager::GetSingleton();
-        if (!mtm) return nullptr;
-        auto ref = mtm->speaker.get();
-        return ref ? ref->As<RE::Actor>() : nullptr;
-    }
-
-    RE::Actor* CurrentDialogueSpeaker() {
-        auto* mtm = RE::MenuTopicManager::GetSingleton();
-        if (!mtm) return nullptr;
-        auto ref = mtm->speaker.get();
-        if (!ref) ref = mtm->lastSpeaker.get();
-        return ref ? ref->As<RE::Actor>() : nullptr;
-    }
-
-    void SwapIntoVanillaAlias(RE::Actor* actor, std::int32_t slot) {
-        if (!actor || slot < 0 || !EnsureAliases()) return;
-
-        auto* current = PrimaryFollower();
-        if (current == actor) return;
-
-        if (current)
-            FillAlias(g_extraAliases[slot], current);
-        else
-            ClearAlias(g_extraAliases[slot]);
-
-        FillAlias(g_vanillaAlias, actor);
-        g_trackedPrimary = actor->GetFormID();
-
-        actor->EvaluatePackage();
-        if (current) current->EvaluatePackage();
-
-        SyncState();
-    }
-
-    bool IsOrphanedFollower(RE::Actor* actor) {
-        if (!actor || actor == RE::PlayerCharacter::GetSingleton()) return false;
-        if (!actor->IsPlayerTeammate() || actor->IsDead()) return false;
-        auto* fac = LookupCached(g_potentialFollower, "PotentialFollowerFaction"sv);
-        if (!fac || !actor->IsInFaction(fac)) return false;
-        if (actor == PrimaryFollower() || ExtraSlotOf(actor) >= 0) return false;
-        return true;
     }
 
     bool AdoptOrphan(RE::Actor* actor) {
-        if (!IsOrphanedFollower(actor)) return false;
+        if (!actor || actor == RE::PlayerCharacter::GetSingleton()) return false;
+        if (actor->IsDead() || !actor->IsPlayerTeammate() || SlotOf(actor) >= 0) return false;
+        auto* potential = LookupCached(g_potentialFollower, "PotentialFollowerFaction"sv);
+        if (!potential || !actor->IsInFaction(potential)) return false;
+        if (VanillaDismissed(actor)) return false;
 
-        if (!PrimaryFollower()) {
-            FillAlias(g_vanillaAlias, actor);
-            g_trackedPrimary = actor->GetFormID();
-            actor->EvaluatePackage();
-            logger::info("adopt: {:08X} -> vanilla alias", actor->GetFormID());
-            return true;
-        }
+        const auto slot = FirstFreeSlot();
+        if (slot < 0) return false;
 
-        const auto slot = FirstFreeExtraSlot();
-        if (slot >= 0) {
-            FillAlias(g_extraAliases[slot], actor);
-            actor->EvaluatePackage();
-            logger::info("adopt: {:08X} -> slot{}", actor->GetFormID(), slot + kFirstExtraAlias);
-            return true;
-        }
-
-        actor->GetActorRuntimeData().boolBits.reset(RE::Actor::BOOL_BITS::kPlayerTeammate);
+        FillAlias(g_slots[slot], actor);
+        g_slotRoster[slot] = actor->GetFormID();
         actor->EvaluatePackage();
-        logger::info("release: {:08X} orphaned with no free slot", actor->GetFormID());
-        return false;
+        return true;
     }
 
-    void RecoverLegacyAliases() {
-        auto* df = GetDialogueFollower();
-        if (!df) return;
-        for (const auto& entry : df->refAliasMap) {
-            if (entry.first < 2 || entry.first > 8) continue;
-            auto ref = entry.second.get();
-            auto* a = ref ? ref->As<RE::Actor>() : nullptr;
-            if (!a || !IsOrphanedFollower(a)) continue;
-            logger::info("legacy: recovering {:08X} from retired alias {}", a->GetFormID(), entry.first);
-            AdoptOrphan(a);
-        }
+    void AbsorbVanillaAlias() {
+        auto* occupant = AliasActor(g_vanillaAlias);
+        if (!occupant || occupant->IsDead()) return;
+        if (!occupant->IsPlayerTeammate() || SlotOf(occupant) >= 0) return;
+
+        if (VanillaDismissed(occupant)) return;
+
+        const auto slot = FirstFreeSlot();
+        if (slot < 0) return;
+
+        FillAlias(g_slots[slot], occupant);
+        g_slotRoster[slot] = occupant->GetFormID();
+        occupant->EvaluatePackage();
     }
 
     void OnFollowerActivated(RE::Actor* actor) {
-        if (!EnsureAliases()) return;
-        const auto slot = actor ? ExtraSlotOf(actor) : -1;
-        if (slot >= 0) {
-            SwapIntoVanillaAlias(actor, slot);
-            return;
-        }
-        if (AdoptOrphan(actor)) {
-            if (const auto s2 = ExtraSlotOf(actor); s2 >= 0) {
-                SwapIntoVanillaAlias(actor, s2);
-                return;
+        std::lock_guard<std::recursive_mutex> lock(g_stateLock);
+        if (!actor || !EnsureAliases()) return;
+        g_dialogueTarget = actor->GetHandle();
+
+        ReleaseRetiredSlots();
+        AbsorbVanillaAlias();
+        AdoptOrphan(actor);
+        if (SlotOf(actor) >= 0 && !VanillaDismissed(actor)) {
+            if (AliasActor(g_vanillaAlias) != actor) {
+                FillAlias(g_vanillaAlias, actor);
+                actor->EvaluatePackage();
             }
+        } else {
+            SetVanillaDialogueHidden(actor, false);
+            auto* held = AliasActor(g_vanillaAlias);
+            if (held && (held == actor || VanillaDismissed(held) || (Recruitable(actor) && SlotOf(held) >= 0))) ClearAlias(g_vanillaAlias);
         }
+        SyncState();
+    }
+
+    void EndDialogue() {
+        std::lock_guard<std::recursive_mutex> lock(g_stateLock);
+        g_dialogueTarget = {};
+        if (!EnsureAliases()) return;
+
+        AbsorbVanillaAlias();
         SyncState();
     }
 
     void GatherFollowersAfterTravel() {
+        std::lock_guard<std::recursive_mutex> lock(g_stateLock);
         if (!EnsureAliases()) return;
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player) return;
 
-        auto bring = [&](RE::Actor* a) {
-            if (!a || a->IsDead()) return;
-            if (a->AsActorValueOwner()->GetActorValue(RE::ActorValue::kWaitingForPlayer) > 0.0f) return;
-
-            const bool otherCell = a->GetParentCell() != player->GetParentCell();
-            if (!otherCell && a->GetDistance(player) < kLeftBehindDistance) return;
+        for (std::size_t i = 0; i < kSlotCount; ++i) {
+            auto* a = AliasActor(g_slots[i]);
+            if (!a || a->IsDead()) continue;
+            if (a->AsActorValueOwner()->GetActorValue(RE::ActorValue::kWaitingForPlayer) > 0.0f) continue;
+            if (a->GetParentCell() == player->GetParentCell() && a->GetDistance(player) < kLeftBehindDistance) continue;
 
             a->MoveTo(player);
             a->EvaluatePackage();
-            logger::info("gather: pulled {:08X} to player after travel (otherCell={})", a->GetFormID(), otherCell);
-        };
-
-        bring(PrimaryFollower());
-        for (std::uint32_t i = 0; i < kExtraAliasCount; ++i) bring(AliasActor(g_extraAliases[i]));
+        }
     }
 
-    void ReconcileVanillaAlias() {
+    void CaptureRoster() {
+        std::lock_guard<std::recursive_mutex> lock(g_stateLock);
+        g_slotRoster.fill(0);
         if (!EnsureAliases()) return;
 
-        auto* cur = PrimaryFollower();
-        const RE::FormID curID = cur ? cur->GetFormID() : 0;
-        if (curID == g_trackedPrimary) return;
+        for (std::size_t i = 0; i < kSlotCount; ++i) {
+            auto* a = AliasActor(g_slots[i]);
+            if (a && !a->IsDead() && a->IsPlayerTeammate()) g_slotRoster[i] = a->GetFormID();
+        }
+    }
 
-        if (g_trackedPrimary) {
-            auto* form = RE::TESForm::LookupByID(g_trackedPrimary);
-            auto* prev = form ? form->As<RE::Actor>() : nullptr;
-            if (prev && prev != cur && !prev->IsDead() && prev->IsPlayerTeammate() && ExtraSlotOf(prev) < 0) {
-                const auto slot = FirstFreeExtraSlot();
-                if (slot >= 0) {
-                    FillAlias(g_extraAliases[slot], prev);
-                } else {
-                    prev->GetActorRuntimeData().boolBits.reset(RE::Actor::BOOL_BITS::kPlayerTeammate);
-                    logger::info("release: {:08X} displaced with no free slot", prev->GetFormID());
-                }
-                prev->EvaluatePackage();
-            }
+    void RestoreRoster() {
+        std::lock_guard<std::recursive_mutex> lock(g_stateLock);
+        if (!EnsureAliases()) return;
+
+        ClearAlias(g_vanillaAlias);
+
+        for (std::size_t i = 0; i < kSlotCount; ++i) {
+            if (AliasActor(g_slots[i])) continue;
+            auto* a = ResolveActorForm(g_slotRoster[i]);
+            if (!a || a->IsDead() || SlotOf(a) >= 0 || VanillaDismissed(a)) continue;
+            FillAlias(g_slots[i], a);
         }
 
-        g_trackedPrimary = curID;
-        SyncState();
+        for (std::size_t i = 0; i < kSlotCount; ++i) {
+            auto* a = AliasActor(g_slots[i]);
+            if (!a || a->IsDead()) continue;
+            if (VanillaDismissed(a)) continue;
+            if (!a->IsPlayerTeammate()) a->GetActorRuntimeData().boolBits.set(RE::Actor::BOOL_BITS::kPlayerTeammate);
+            a->EvaluatePackage();
+        }
     }
 
     [[noreturn]] void MessageAndExit(const char* msg) {
         MessageBoxA(nullptr, msg, "SimpleFollowerFramework.dll", MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);
         ExitProcess(1);
+    }
+
+    void ApplySettings() {
+        ApplyFriendlyFire();
+        ApplySandbox();
+        SyncState();
+    }
+
+    void Defer(void (*fn)()) {
+        if (auto* task = SKSE::GetTaskInterface())
+            task->AddTask(fn);
+        else
+            fn();
     }
 
     class MenuSink final : public RE::BSTEventSink<RE::MenuOpenCloseEvent> {
@@ -518,15 +491,13 @@ namespace {
             static MenuSink s;
             return &s;
         }
-        RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* e,
-                                              RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
+        RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* e, RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
             if (e && e->menuName == RE::DialogueMenu::MENU_NAME) {
-                if (e->opening)
-                    OnFollowerActivated(CurrentDialogueSpeaker());
-                else if (auto* task = SKSE::GetTaskInterface())
-                    task->AddTask([]() { ReconcileVanillaAlias(); });
-                else
-                    ReconcileVanillaAlias();
+                if (e->opening) {
+                    if (!g_dialogueTarget.get()) SyncState();
+                } else {
+                    Defer(EndDialogue);
+                }
             }
             return RE::BSEventNotifyControl::kContinue;
         }
@@ -538,14 +509,12 @@ namespace {
             static ActivateSink s;
             return &s;
         }
-        RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* e,
-                                              RE::BSTEventSource<RE::TESActivateEvent>*) override {
+        RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* e, RE::BSTEventSource<RE::TESActivateEvent>*) override {
             if (!e) return RE::BSEventNotifyControl::kContinue;
 
             auto* player = RE::PlayerCharacter::GetSingleton();
-            auto* activator = e->actionRef.get();
             auto* activated = e->objectActivated.get();
-            if (!player || activator != player || !activated) return RE::BSEventNotifyControl::kContinue;
+            if (!player || e->actionRef.get() != player || !activated) return RE::BSEventNotifyControl::kContinue;
 
             auto* actor = activated->As<RE::Actor>();
             if (!actor || actor == player) return RE::BSEventNotifyControl::kContinue;
@@ -561,11 +530,13 @@ namespace {
             static DeathSink s;
             return &s;
         }
-        RE::BSEventNotifyControl ProcessEvent(const RE::TESDeathEvent* e,
-                                              RE::BSTEventSource<RE::TESDeathEvent>*) override {
+        RE::BSEventNotifyControl ProcessEvent(const RE::TESDeathEvent* e, RE::BSTEventSource<RE::TESDeathEvent>*) override {
             if (!e || !e->dead) return RE::BSEventNotifyControl::kContinue;
             auto* actor = e->actorDying ? e->actorDying->As<RE::Actor>() : nullptr;
-            if (actor && IsManagedFollower(actor)) SyncState();
+            if (!actor || !actor->IsPlayerTeammate()) return RE::BSEventNotifyControl::kContinue;
+            std::lock_guard<std::recursive_mutex> lock(g_stateLock);
+            if (SlotOf(actor) < 0) return RE::BSEventNotifyControl::kContinue;
+            Defer(SyncState);
             return RE::BSEventNotifyControl::kContinue;
         }
     };
@@ -576,12 +547,8 @@ namespace {
             static FastTravelSink s;
             return &s;
         }
-        RE::BSEventNotifyControl ProcessEvent(const RE::TESFastTravelEndEvent*,
-                                              RE::BSTEventSource<RE::TESFastTravelEndEvent>*) override {
-            if (auto* task = SKSE::GetTaskInterface())
-                task->AddTask([]() { GatherFollowersAfterTravel(); });
-            else
-                GatherFollowersAfterTravel();
+        RE::BSEventNotifyControl ProcessEvent(const RE::TESFastTravelEndEvent*, RE::BSTEventSource<RE::TESFastTravelEndEvent>*) override {
+            Defer(GatherFollowersAfterTravel);
             return RE::BSEventNotifyControl::kContinue;
         }
     };
@@ -595,23 +562,59 @@ namespace {
         }
     }
 
-    void ResetCaches() {
-        g_sffQuest = nullptr;
-        g_dialogueFollower = nullptr;
-        g_vanillaAlias = nullptr;
-        g_mirrorAlias = nullptr;
-        g_extraAliases.fill(nullptr);
-        g_playerFollowerCount = nullptr;
-        g_sffCanRecruitMore = nullptr;
-        g_sffCurrentFollowerCount = nullptr;
-        g_sffFollowerSandbox = nullptr;
-        g_friendlyFireSpell = nullptr;
-        g_potentialFollower = nullptr;
-        g_trackedPrimary = 0;
-        g_perkCache.fill(nullptr);
-        g_perkCacheValid = false;
-        g_essOrig.clear();
-        g_crossfireGranted.clear();
+    void OnGameReady() {
+        ApplyFriendlyFire();
+        ApplySandbox();
+
+        auto* sff = GetSFFQuest();
+        if (sff && !sff->IsRunning()) sff->Start();
+        if (!EnsureAliases()) return;
+
+        RestoreRoster();
+        SyncState();
+    }
+
+    void OnCosaveSave(SKSE::SerializationInterface* intfc) {
+        CaptureRoster();
+        if (!intfc->OpenRecord(kRosterRecord, kRosterVersion)) return;
+        intfc->WriteRecordData(g_slotRoster.data(), static_cast<std::uint32_t>(g_slotRoster.size() * sizeof(RE::FormID)));
+    }
+
+    void OnCosaveLoad(SKSE::SerializationInterface* intfc) {
+        std::lock_guard<std::recursive_mutex> lock(g_stateLock);
+        g_slotRoster.fill(0);
+
+        auto resolve = [intfc](RE::FormID id) -> RE::FormID {
+            RE::FormID out = 0;
+            return (id && intfc->ResolveFormID(id, out)) ? out : 0;
+        };
+
+        std::uint32_t type = 0;
+        std::uint32_t version = 0;
+        std::uint32_t length = 0;
+        while (intfc->GetNextRecordInfo(type, version, length)) {
+            if (type != kRosterRecord) continue;
+
+            if (version == kRosterVersion) {
+                std::array<RE::FormID, kSlotCount> slots{};
+                intfc->ReadRecordData(slots.data(), static_cast<std::uint32_t>(slots.size() * sizeof(RE::FormID)));
+                for (std::size_t i = 0; i < kSlotCount; ++i) g_slotRoster[i] = resolve(slots[i]);
+            } else if (version == kLegacyRosterVersion) {
+                RE::FormID primary = 0;
+                std::array<RE::FormID, kSlotCount - 1> extras{};
+                intfc->ReadRecordData(&primary, static_cast<std::uint32_t>(sizeof(primary)));
+                intfc->ReadRecordData(extras.data(), static_cast<std::uint32_t>(extras.size() * sizeof(RE::FormID)));
+                g_slotRoster[0] = resolve(primary);
+                for (std::size_t i = 0; i < extras.size(); ++i) g_slotRoster[i + 1] = resolve(extras[i]);
+            }
+        }
+    }
+
+    void OnCosaveRevert(SKSE::SerializationInterface*) {
+        std::lock_guard<std::recursive_mutex> lock(g_stateLock);
+        ReleaseAllEssential();
+        g_slotRoster.fill(0);
+        g_dialogueTarget = {};
     }
 
     void OnMessage(SKSE::MessagingInterface::Message* msg) {
@@ -620,25 +623,15 @@ namespace {
         switch (msg->type) {
         case SKSE::MessagingInterface::kDataLoaded:
             if (!RE::TESForm::LookupByEditorID("SFF_FollowerQuest")) {
-                MessageAndExit(
-                    "Simple Follower Framework.esp is missing or not active.\n\n"
-                    "Enable it in your load order, then relaunch.");
+                MessageAndExit("Simple Follower Framework.esp is missing or not active.\n\nEnable it in your load order, then relaunch.");
             }
             Install();
             break;
 
         case SKSE::MessagingInterface::kPostLoadGame:
         case SKSE::MessagingInterface::kNewGame:
-            ResetCaches();
             SFF_Settings::Load(true);
-            if (auto* sff = GetSFFQuest(); sff && !sff->IsRunning()) sff->Start();
-            if (EnsureAliases()) {
-                if (auto* primary = PrimaryFollower()) g_trackedPrimary = primary->GetFormID();
-            }
-            RecoverLegacyAliases();
-            SyncState();
-            ApplyFriendlyFire();
-            ApplySandbox();
+            Defer(OnGameReady);
             break;
 
         default:
@@ -652,13 +645,18 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     SKSE::Init(skse);
 
     SFF_Settings::Load();
-
-    SFF_Settings::ApplyGateCallback = []() { SyncState(); };
-    SFF_Settings::FriendlyFireCallback = []() { ApplyFriendlyFire(); };
-    SFF_Settings::SandboxCallback = []() { ApplySandbox(); };
-    SFF_Settings::CrossfireCallback = []() { SyncState(); };
+    SFF_Settings::SettingsChangedCallback = []() { Defer(ApplySettings); };
 
     if (auto* messaging = SKSE::GetMessagingInterface()) messaging->RegisterListener(OnMessage);
+
+    if (auto* serialization = SKSE::GetSerializationInterface()) {
+        serialization->SetUniqueID(kSerializationID);
+        serialization->SetSaveCallback(OnCosaveSave);
+        serialization->SetLoadCallback(OnCosaveLoad);
+        serialization->SetRevertCallback(OnCosaveRevert);
+    } else {
+        logger::error("no serialization interface: followers will not survive a reload");
+    }
 
     SFF_UI::Register();
 

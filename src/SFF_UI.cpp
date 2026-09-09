@@ -29,8 +29,7 @@ static void HelpMarker(const char* desc) {
 }
 
 static bool StyledRadio(const char* label, const char* desc, bool selected) {
-    ImGuiMCP::ImVec4 labelCol =
-        selected ? ImGuiMCP::ImVec4{0.85f, 0.72f, 0.40f, 1.0f} : ImGuiMCP::ImVec4{0.90f, 0.90f, 0.90f, 1.0f};
+    ImGuiMCP::ImVec4 labelCol = selected ? ImGuiMCP::ImVec4{0.85f, 0.72f, 0.40f, 1.0f} : ImGuiMCP::ImVec4{0.90f, 0.90f, 0.90f, 1.0f};
     ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, labelCol);
     bool hit = ImGuiMCP::RadioButton(label, selected);
     ImGuiMCP::PopStyleColor();
@@ -92,11 +91,7 @@ void __stdcall SFF_UI::RenderSettings() {
         ImGuiMCP::TextUnformatted("Perk List");
         ImGuiMCP::PopStyleColor();
         ImGuiMCP::SameLine();
-        HelpMarker(
-            "Comma-separated list, up to 8 entries.\n"
-            "Format: PluginName.esp|FormID\n"
-            "Example: Skyrim.esm|00058F75\n"
-            "Each perk the player owns grants one extra follower slot.");
+        HelpMarker("Comma-separated list, up to 8 entries.\nFormat: PluginName.esp|FormID\nExample: Skyrim.esm|00058F75\nEach perk the player owns grants one extra follower slot.");
         ImGuiMCP::SetNextItemWidth(-1.0f);
         if (ImGuiMCP::InputText("##PerkList", SFF_Settings::PerkListBuffer, sizeof(SFF_Settings::PerkListBuffer))) {
             changed = true;
@@ -129,9 +124,7 @@ void __stdcall SFF_UI::RenderSettings() {
             changed = true;
         }
         ImGuiMCP::SameLine();
-        HelpMarker(
-            "Speech levels needed for each extra follower slot.\n"
-            "Default is 10: Meaning: Speech 0-9 = 1 follower.\n");
+        HelpMarker("Speech levels needed for each extra follower slot.\nDefault is 10: Meaning: Speech 0-9 = 1 follower.\n");
         ImGuiMCP::Unindent(22.0f);
         EndDisabled(dis);
     }
@@ -152,12 +145,7 @@ void __stdcall SFF_UI::RenderSettings() {
         ImGuiMCP::PopStyleColor();
         ImGuiMCP::SameLine();
 
-        HelpMarker(
-            "Flags every actor in CurrentFollowerFaction as Essential,\n"
-            "so they cannot be killed while following you.\n"
-            "Their original Essential or Protected state is fully\n"
-            "restored when they leave the party."
-        );
+        HelpMarker("Flags every actor in CurrentFollowerFaction as Essential,\nso they cannot be killed while following you.\nTheir original Essential or Protected state is fully\nrestored when they leave the party.");
 
         if (ess) {
             ImGuiMCP::Indent(22.0f);
@@ -175,17 +163,13 @@ void __stdcall SFF_UI::RenderSettings() {
         if (ImGuiMCP::Checkbox("##FFCheck", &ff)) {
             SFF_Settings::FriendlyFire = ff;
             changed = true;
-            if (SFF_Settings::FriendlyFireCallback) SFF_Settings::FriendlyFireCallback();
         }
         ImGuiMCP::SameLine();
         ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, ff ? ImGuiMCP::ImVec4{0.85f, 0.72f, 0.40f, 1.0f} : ImGuiMCP::ImVec4{0.90f, 0.90f, 0.90f, 1.0f});
         ImGuiMCP::TextUnformatted("Friendly Fire Protection");
         ImGuiMCP::PopStyleColor();
         ImGuiMCP::SameLine();
-        HelpMarker(
-            "Your attacks, shouts, and destruction spells do no\n"
-            "damage to your followers while in combat.\n"
-        );
+        HelpMarker("Your attacks, shouts, and destruction spells do no\ndamage to your followers while in combat.\n");
         if (ff) {
             ImGuiMCP::Indent(22.0f);
             ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, ImGuiMCP::ImVec4{0.45f, 0.75f, 0.45f, 1.0f});
@@ -202,18 +186,13 @@ void __stdcall SFF_UI::RenderSettings() {
         if (ImGuiMCP::Checkbox("##CFCheck", &cf)) {
             SFF_Settings::FollowerCrossfire = cf;
             changed = true;
-            if (SFF_Settings::CrossfireCallback) SFF_Settings::CrossfireCallback();
         }
         ImGuiMCP::SameLine();
         ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, cf ? ImGuiMCP::ImVec4{0.85f, 0.72f, 0.40f, 1.0f} : ImGuiMCP::ImVec4{0.90f, 0.90f, 0.90f, 1.0f});
         ImGuiMCP::TextUnformatted("Follower Crossfire Protection");
         ImGuiMCP::PopStyleColor();
         ImGuiMCP::SameLine();
-        HelpMarker(
-            "Followers cannot damage each other.\n"
-            "Their attacks, shouts and spells do no damage to\n"
-            "anyone else in your party.\n"
-            "Does not change how they damage enemies.");
+        HelpMarker("Followers cannot damage each other.\nTheir attacks, shouts and spells do no damage to\nanyone else in your party.\nDoes not change how they damage enemies.");
         if (cf) {
             ImGuiMCP::Indent(22.0f);
             ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, ImGuiMCP::ImVec4{0.45f, 0.75f, 0.45f, 1.0f});
@@ -230,7 +209,6 @@ void __stdcall SFF_UI::RenderSettings() {
         if (ImGuiMCP::Checkbox("##SandboxCheck", &sb)) {
             SFF_Settings::FollowerSandbox = sb;
             changed = true;
-            if (SFF_Settings::SandboxCallback) SFF_Settings::SandboxCallback();
         }
         ImGuiMCP::SameLine();
         ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, sb ? ImGuiMCP::ImVec4{0.85f, 0.72f, 0.40f, 1.0f} : ImGuiMCP::ImVec4{0.90f, 0.90f, 0.90f, 1.0f});
@@ -238,9 +216,7 @@ void __stdcall SFF_UI::RenderSettings() {
         ImGuiMCP::PopStyleColor();
         ImGuiMCP::SameLine();
 
-        HelpMarker(
-            "Allows followers to sandbox (wander, sit, idle) in Dwellings and Habitation\n"
-            "Example: Towns, Homes and anyother places marked as Dwellings and Habitation");
+        HelpMarker("Allows followers to sandbox (wander, sit, idle) in Dwellings and Habitation\nExample: Towns, Homes and anyother places marked as Dwellings and Habitation");
 
         if (sb) {
             ImGuiMCP::Indent(22.0f);
@@ -257,10 +233,7 @@ void __stdcall SFF_UI::RenderSettings() {
 
     if (ImGuiMCP::Button("Save Settings")) SFF_Settings::Save();
     ImGuiMCP::SameLine();
-    HelpMarker(
-        "Writes the current values to:\n"
-        "Data\\SKSE\\Plugins\\SimpleFollowerFramework.ini\n"
-        "Changes are already live in-game. This only saves them.");
+    HelpMarker("Writes the current values to:\nData\\SKSE\\Plugins\\SimpleFollowerFramework.ini\nChanges are already live in-game. This only saves them.");
 
     ImGuiMCP::SameLine(0.0f, 14.0f);
 
@@ -272,5 +245,5 @@ void __stdcall SFF_UI::RenderSettings() {
     HelpMarker("Discard unsaved UI changes and reload values from the INI file.");
     ImGuiMCP::SetWindowFontScale(1.0f);
 
-    if (changed && SFF_Settings::ApplyGateCallback) SFF_Settings::ApplyGateCallback();
+    if (changed && SFF_Settings::SettingsChangedCallback) SFF_Settings::SettingsChangedCallback();
 }

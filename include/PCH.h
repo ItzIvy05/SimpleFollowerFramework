@@ -6,11 +6,12 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace logger = SKSE::log;
 using namespace std::literals;

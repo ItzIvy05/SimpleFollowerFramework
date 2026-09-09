@@ -28,10 +28,7 @@ namespace SFF_Settings {
     inline bool FollowerCrossfire = false;
     inline char PerkListBuffer[2048]{};
     inline bool Loaded = false;
-    inline void (*ApplyGateCallback)() = nullptr;
-    inline void (*FriendlyFireCallback)() = nullptr;
-    inline void (*SandboxCallback)() = nullptr;
-    inline void (*CrossfireCallback)() = nullptr;
+    inline void (*SettingsChangedCallback)() = nullptr;
 
     void Load(bool force = false);
     void Save();
