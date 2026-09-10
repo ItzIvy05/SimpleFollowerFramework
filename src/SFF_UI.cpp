@@ -216,7 +216,13 @@ void __stdcall SFF_UI::RenderSettings() {
         ImGuiMCP::PopStyleColor();
         ImGuiMCP::SameLine();
 
+<<<<<<< HEAD
         HelpMarker("Allows followers to sandbox (wander, sit, idle) in Dwellings and Habitation\nExample: Towns, Homes and anyother places marked as Dwellings and Habitation");
+=======
+        HelpMarker(
+            "Allows followers to sandbox (wander, sit, idle) in Dwellings and Habitation\n"
+            "Exmaple: Towns, Homes and anyother places marked as Dwellings and Habitation");
+>>>>>>> parent of 3a0c412 (Update SFF_UI.cpp)
 
         if (sb) {
             ImGuiMCP::Indent(22.0f);
