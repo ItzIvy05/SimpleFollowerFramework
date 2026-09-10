@@ -128,7 +128,7 @@ void __stdcall SFF_UI::RenderSettings() {
 
     ImGuiMCP::Spacing();
 
-    ImGuiMCP::SeparatorText("FOLLOWER PROTECTION");
+    ImGuiMCP::SeparatorText("FEATURES");
 
     {
         bool ess = SFF_Settings::FollowerEssential;
@@ -264,4 +264,5 @@ void __stdcall SFF_UI::RenderSettings() {
     ImGuiMCP::SetWindowFontScale(1.0f);
 
     if (changed) SFF_Settings::ApplyGateCallback();
+    ImGuiMCP::SameLine();
 }
