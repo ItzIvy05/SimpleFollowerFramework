@@ -3,10 +3,11 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
-#include <cstring>
 #include <string>
 
 namespace SFF_Settings {
+
+    // Internal string helpers BTW nvm...
 
     static std::string TrimCopy(std::string s) {
         auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
@@ -24,8 +25,13 @@ namespace SFF_Settings {
     }
 
     static std::string StripQuotes(std::string s) {
+        s = TrimCopy(s);
+        if (s.size() >= 2 && s.front() == '"' && s.back() == '"') s = s.substr(1, s.size() - 2);
+
         std::string out;
+
         out.reserve(s.size());
+
         for (char c : s)
             if (c != '"') out.push_back(c);
         return TrimCopy(out);
@@ -55,8 +61,9 @@ namespace SFF_Settings {
         return true;
     }
 
+    // Public API - Its the api just yoink it from here or exmaple plugin..
+
     void ParsePerkListIntoSpecs(const std::string& raw) {
-        ++PerkListGeneration;
         PerkSpecCount = 0;
         for (auto& p : PerkSpecs) {
             p.has = false;
@@ -98,15 +105,15 @@ namespace SFF_Settings {
             std::snprintf(hex, sizeof(hex), "%08X", p.localID);
             result += p.file + "|" + hex;
         }
-        const auto n = std::min(result.size(), sizeof(PerkListBuffer) - 1);
-        std::memcpy(PerkListBuffer, result.data(), n);
-        PerkListBuffer[n] = '\0';
+        std::strncpy(PerkListBuffer, result.c_str(), sizeof(PerkListBuffer) - 1);
+        PerkListBuffer[sizeof(PerkListBuffer) - 1] = '\0';
     }
 
     void Load(bool force) {
         if (Loaded && !force) return;
         Loaded = true;
 
+        // Hard defaults (used if INI is missing)
         MaxExtraFollowers = 3;
         FollowerPerkOption = 0;
         SpeechLevelsPerSlot = 10;
@@ -119,33 +126,53 @@ namespace SFF_Settings {
         FollowerEssential = false;
         FriendlyFire = false;
         FollowerSandbox = false;
-        FollowerCrossfire = false;
         PerkListBuffer[0] = '\0';
 
-        if (GetFileAttributesA(kIniPath) == INVALID_FILE_ATTRIBUTES) {
+        DWORD attrs = GetFileAttributesA(kIniPath);
+        if (attrs == INVALID_FILE_ATTRIBUTES) {
             BuildPerkListBuffer();
             return;
         }
 
+        // iMaxFollowers
         int maxVal = GetPrivateProfileIntA("General", "iMaxFollowers", 4, kIniPath);
         maxVal = std::clamp(maxVal, 1, 8);
         MaxExtraFollowers = maxVal - 1;
 
-        FollowerPerkOption = std::clamp(static_cast<int>(GetPrivateProfileIntA("General", "bFollowerOptionSelector", 0, kIniPath)), 0, 2);
+        // bFollowerOptionSelector
+        int opt = GetPrivateProfileIntA("General", "iFollowerPerkOption", -1, kIniPath);
+        if (opt < 0) opt = GetPrivateProfileIntA("General", "bFollowerOptionSelector", 0, kIniPath);
+        FollowerPerkOption = std::clamp(opt, 0, 2);
 
+        // iSpeechLevelsPerSlot
         int sl = GetPrivateProfileIntA("General", "iSpeechLevelsPerSlot", 10, kIniPath);
         SpeechLevelsPerSlot = std::max(sl, 1);
+
+        // sPerkForms
 
         char buf[2048]{};
         GetPrivateProfileStringA("General", "sPerkForms", "", buf, static_cast<DWORD>(sizeof(buf)), kIniPath);
 
-        ParsePerkListIntoSpecs(StripInlineComment(buf));
+        std::string perkList = StripInlineComment(buf);
+
+        if (perkList.empty()) {
+            char buf2[2048]{};
+
+            GetPrivateProfileStringA("General", "sPerkForm", "", buf2, static_cast<DWORD>(sizeof(buf2)), kIniPath);
+
+            perkList = StripInlineComment(buf2);
+        }
+        ParsePerkListIntoSpecs(perkList);
         BuildPerkListBuffer();
 
+        // bFollowerEssential
         FollowerEssential = GetPrivateProfileIntA("General", "bFollowerEssential", 0, kIniPath) != 0;
+
+        // bFriendlyFireProtection
         FriendlyFire = GetPrivateProfileIntA("General", "bFriendlyFireProtection", 0, kIniPath) != 0;
+
+        // bFollowerSandbox
         FollowerSandbox = GetPrivateProfileIntA("General", "bFollowerSandbox", 0, kIniPath) != 0;
-        FollowerCrossfire = GetPrivateProfileIntA("General", "bFollowerCrossfireProtection", 0, kIniPath) != 0;
     }
 
     void Save() {
@@ -163,9 +190,9 @@ namespace SFF_Settings {
         writeInt("bFollowerEssential", FollowerEssential ? 1 : 0);
         writeInt("bFriendlyFireProtection", FriendlyFire ? 1 : 0);
         writeInt("bFollowerSandbox", FollowerSandbox ? 1 : 0);
-        writeInt("bFollowerCrossfireProtection", FollowerCrossfire ? 1 : 0);
         ParsePerkListIntoSpecs(PerkListBuffer);
         BuildPerkListBuffer();
         writeStr("sPerkForms", PerkListBuffer);
+        WritePrivateProfileStringA("General", "sPerkForm", nullptr, kIniPath);
     }
 }
