@@ -2,7 +2,6 @@
 #include <windows.h>
 #include <array>
 #include <cstdint>
-#include <functional>
 #include <string>
 
 namespace SFF_Settings {
@@ -11,7 +10,6 @@ namespace SFF_Settings {
     constexpr const char* kIniPath = "Data\\SKSE\\Plugins\\SimpleFollowerFramework.ini";
 
     struct PerkSpec {
-        bool has = false;
         std::string file;
         std::uint32_t localID = 0;
     };
@@ -24,11 +22,15 @@ namespace SFF_Settings {
     inline bool FollowerEssential = false;
     inline bool FriendlyFire = false;
     inline bool FollowerSandbox = false;
+    inline bool FollowerCrossfire = false;
+    inline bool FollowerHomes = true;
     inline char PerkListBuffer[2048]{};
     inline bool Loaded = false;
     inline void (*ApplyGateCallback)() = nullptr;
     inline void (*FriendlyFireCallback)() = nullptr;
     inline void (*SandboxCallback)() = nullptr;
+    inline void (*CrossfireCallback)() = nullptr;
+    inline void (*HomesCallback)() = nullptr;
     void Load(bool force = false);
     void Save();
     void ParsePerkListIntoSpecs(const std::string& raw);

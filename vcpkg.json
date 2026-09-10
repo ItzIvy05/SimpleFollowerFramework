@@ -1,8 +1,14 @@
 {
-    "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
-    "name": "hello-world",
-    "version-string": "0.0.1",
-    "dependencies": [
-        "commonlibsse-ng"
-    ]
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "simplefollowerframework",
+  "version-string": "1.0.0.0",
+  "dependencies": [
+    "spdlog",
+    "rapidcsv",
+    "directxtk",
+    "clib-util",
+    "clib-utils-qtr",
+    "skse-mcp"
+  ],
+  "builtin-baseline": "ee12231b20c95013c6638d845d04c91559a1d1ff"
 }

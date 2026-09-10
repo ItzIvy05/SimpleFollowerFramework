@@ -23,7 +23,6 @@ Int Property iSFFFollowerCount Auto Conditional
 ReferenceAlias[] Property SFFExtraAliases Auto
 GlobalVariable Property SFFCanRecruitMore Auto
 GlobalVariable Property SFFCurrentFollowerCount Auto
-GlobalVariable Property TestTesr Auto
 Actor SFFLastSpeaker
 
 Event OnInit()
@@ -82,26 +81,6 @@ Int Function SFF_GetExtraAliasIndexByActor(Actor akActor)
 	EndWhile
 
 	Return -1
-EndFunction
-
-ReferenceAlias Function SFF_GetExtraAliasByActor(Actor akActor)
-	Int idx = SFF_GetExtraAliasIndexByActor(akActor)
-	If idx < 0
-		Return None
-	EndIf
-	Return SFFExtraAliases[idx]
-EndFunction
-
-ReferenceAlias Function SFF_GetAliasForTrackedFollower(Actor akActor)
-	If !akActor
-		Return None
-	EndIf
-
-	If pFollowerAlias.GetActorReference() == akActor
-		Return pFollowerAlias
-	EndIf
-
-	Return SFF_GetExtraAliasByActor(akActor)
 EndFunction
 
 Int Function SFF_FindFirstFreeExtraAliasIndex()
@@ -209,10 +188,6 @@ Bool Function SFF_AddExtraFollowerAlias(Actor akActor)
 	EndIf
 
 	ReferenceAlias a = SFFExtraAliases[freeIndex]
-	If !a
-		Return False
-	EndIf
-
 	a.ForceRefTo(akActor)
 	akActor.EvaluatePackage()
 	Return True
@@ -229,9 +204,6 @@ Bool Function SFF_RemoveExtraFollowerAlias(Actor akActor)
 	EndIf
 
 	ReferenceAlias a = SFFExtraAliases[idx]
-	If !a
-		Return False
-	EndIf
 
 	If SFFLastSpeaker == akActor
 		SFFLastSpeaker = None
@@ -266,23 +238,6 @@ Actor Function SFF_PopFirstExtraFollower()
 	Return None
 EndFunction
 
-Int Function SFF_GetTrackedFollowerCount()
-	Int total = 0
-
-	Actor primary = SFF_GetPrimaryFollower()
-	If primary
-		total += 1
-	EndIf
-
-	total += SFF_GetExtraFollowerCount()
-
-	If total < 0
-		total = 0
-	EndIf
-
-	Return total
-EndFunction
-
 Int Function SFF_GetMaxFollowersSafe()
 	Int maxFollowers = SFF_SKSE.GetMaxFollowers()
 	If maxFollowers < 1
@@ -290,9 +245,6 @@ Int Function SFF_GetMaxFollowersSafe()
 	EndIf
 
 	Int aliasCapacity = SFFExtraAliases.Length + 1
-	If aliasCapacity < 1
-		aliasCapacity = 1
-	EndIf
 
 	If maxFollowers > aliasCapacity
 		maxFollowers = aliasCapacity
@@ -323,17 +275,11 @@ Function SFF_UpdateFollowerGlobals()
 EndFunction
 
 Function SyncSFFFollowerState()
-	SFF_CleanupDeadExtraFollowers()
-
 	Actor primary = SFF_GetPrimaryFollower()
 
 	iSFFFollowerCount = SFF_GetExtraFollowerCount()
 	If primary
 		iSFFFollowerCount += 1
-	EndIf
-
-	If iSFFFollowerCount < 0
-		iSFFFollowerCount = 0
 	EndIf
 
 	SFF_UpdateFollowerGlobals()
@@ -438,11 +384,10 @@ Function SetFollower(ObjectReference FollowerRef)
 	SyncSFFFollowerState()
 
 	Int maxFollowers = SFF_GetMaxFollowersSafe()
-	Int currentCount = SFF_GetTrackedFollowerCount()
+	Int currentCount = iSFFFollowerCount
 
 	If IsManagedFollower(FollowerActor)
 		PrepareFollowerActor(FollowerActor)
-		SyncSFFFollowerState()
 		Return
 	EndIf
 
@@ -450,11 +395,8 @@ Function SetFollower(ObjectReference FollowerRef)
 
 	If CurrentFollowerActor
 		If currentCount >= maxFollowers
-			SyncSFFFollowerState()
 			Return
 		EndIf
-
-		Actor originalPrimary = CurrentFollowerActor
 
 		If !SFF_AddExtraFollowerAlias(FollowerActor)
 			SyncSFFFollowerState()
@@ -463,11 +405,9 @@ Function SetFollower(ObjectReference FollowerRef)
 
 		PrepareFollowerActor(FollowerActor)
 
-		If originalPrimary
-			If pFollowerAlias.GetActorReference() != originalPrimary
-				pFollowerAlias.ForceRefTo(originalPrimary)
-				originalPrimary.EvaluatePackage()
-			EndIf
+		If pFollowerAlias.GetActorReference() != CurrentFollowerActor
+			pFollowerAlias.ForceRefTo(CurrentFollowerActor)
+			CurrentFollowerActor.EvaluatePackage()
 		EndIf
 
 		SyncSFFFollowerState()
@@ -475,7 +415,6 @@ Function SetFollower(ObjectReference FollowerRef)
 	EndIf
 
 	If currentCount >= maxFollowers
-		SyncSFFFollowerState()
 		Return
 	EndIf
 
@@ -572,7 +511,7 @@ Function DismissFollower(Int iMessage = 0, Int iSayLine = 1)
 
 		SFF_ClearLastSpeakerIfMatches(DismissedFollowerActor)
 
-		SyncSFFFollowerState()
+		SFF_GetPrimaryFollower()
 		SFF_PromoteExtraToPrimaryIfNeeded()
 		SyncSFFFollowerState()
 		Return
@@ -593,7 +532,7 @@ Function DismissFollower(Int iMessage = 0, Int iSayLine = 1)
 
 	iFollowerDismiss = 0
 
-	SyncSFFFollowerState()
+	SFF_GetPrimaryFollower()
 	SFF_PromoteExtraToPrimaryIfNeeded()
 	SyncSFFFollowerState()
 EndFunction
