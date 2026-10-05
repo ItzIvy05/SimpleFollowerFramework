@@ -181,6 +181,12 @@ namespace {
         if (g_sffCanRecruitMore) g_sffCanRecruitMore->value = canRecruitMore ? 1.0f : 0.0f;
     }
 
+    RE::Actor* DialogueSpeaker() {
+        auto* topics = RE::MenuTopicManager::GetSingleton();
+        auto speaker = topics ? topics->speaker.get() : nullptr;
+        return speaker ? speaker->As<RE::Actor>() : nullptr;
+    }
+
     bool IsInServiceEssential(RE::Actor* a) { return a && g_currentFollowerFaction && a->IsInFaction(g_currentFollowerFaction) && a->IsPlayerTeammate(); }
 
     void SetBaseFlag(RE::TESNPC* base, RE::ACTOR_BASE_DATA::Flag flag, bool on) {
@@ -286,26 +292,25 @@ namespace {
         }
         RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* e, RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
             if (e->menuName == "Dialogue Menu") {
-                auto* topics = RE::MenuTopicManager::GetSingleton();
-                auto speaker = (e->opening && topics) ? topics->speaker.get() : nullptr;
-                ApplyFollowerDialogueGate(speaker ? speaker->As<RE::Actor>() : nullptr);
+                ApplyFollowerDialogueGate(e->opening ? DialogueSpeaker() : nullptr);
                 if (e->opening && SFF_Settings::FollowerCrossfire) DeferSyncParty();
             }
             return RE::BSEventNotifyControl::kContinue;
         }
     };
 
-    class ActivateSink final : public RE::BSTEventSink<RE::TESActivateEvent> {
-    public:
-        static ActivateSink* GetSingleton() {
-            static ActivateSink s;
-            return &s;
+    struct DialogueStartHook {
+        static bool Thunk(RE::Actor* actor, bool start, bool forceGreet, RE::TESTopicInfo* topic) {
+            if (start) {
+                ApplyFollowerDialogueGate(actor);
+            }
+            const bool result = original(actor, start, forceGreet, topic);
+            if (start) {
+                ApplyFollowerDialogueGate(DialogueSpeaker());
+            }
+            return result;
         }
-        RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* e, RE::BSTEventSource<RE::TESActivateEvent>*) override {
-            if (e->actionRef.get() != RE::PlayerCharacter::GetSingleton() || !e->objectActivated) return RE::BSEventNotifyControl::kContinue;
-            if (auto* actor = e->objectActivated->As<RE::Actor>()) ApplyFollowerDialogueGate(actor);
-            return RE::BSEventNotifyControl::kContinue;
-        }
+        static inline REL::Relocation<decltype(Thunk)> original;
     };
 
     class TravelSink final : public RE::BSTEventSink<RE::TESFastTravelEndEvent> {
@@ -322,9 +327,10 @@ namespace {
 
     void Install() {
         if (auto* ui = RE::UI::GetSingleton()) ui->AddEventSink<RE::MenuOpenCloseEvent>(MenuSink::GetSingleton());
+        REL::Relocation<std::uintptr_t> characterVtbl{RE::VTABLE_Character[0]};
+        DialogueStartHook::original = characterVtbl.write_vfunc(0x41, DialogueStartHook::Thunk);
         auto* events = RE::ScriptEventSourceHolder::GetSingleton();
         if (!events) return;
-        events->AddEventSink<RE::TESActivateEvent>(ActivateSink::GetSingleton());
         if (events->GetEventSource<RE::TESFastTravelEndEvent>()) events->AddEventSink<RE::TESFastTravelEndEvent>(TravelSink::GetSingleton());
     }
 
