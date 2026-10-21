@@ -24,6 +24,8 @@ namespace {
 
     std::unordered_map<RE::FormID, std::uint8_t> g_essOrig{};
     std::int32_t g_slotCapacity = 8;
+    std::array<RE::BGSPerk*, SFF_Settings::kMaxPerkSpecs> g_perks{};
+    std::size_t g_perkCount = 0;
 
     constexpr const char* kRequiredPluginName = "Simple Follower Framework.esp";
 
@@ -117,22 +119,34 @@ namespace {
         if (g_sffFollowerHomes) g_sffFollowerHomes->value = SFF_Settings::FollowerHomes ? 1.0f : 0.0f;
     }
 
-    bool HasPerkFromSpec(const std::string& file, std::uint32_t localID) {
-        auto* player = RE::PlayerCharacter::GetSingleton();
-        if (!player) return false;
+    void ResolvePerks() {
+        g_perkCount = 0;
         auto* dh = RE::TESDataHandler::GetSingleton();
-        if (!dh) return false;
-        auto* mod = dh->LookupModByName(file);
-        if (!mod) return false;
-        auto* perk = dh->LookupForm<RE::BGSPerk>(localID & (mod->IsLight() ? 0xFFFu : 0xFFFFFFu), file);
-        return perk && player->HasPerk(perk);
+        if (!dh) {
+            return;
+        }
+        for (std::size_t i = 0; i < SFF_Settings::PerkSpecCount; ++i) {
+            const auto& p = SFF_Settings::PerkSpecs[i];
+            auto* mod = dh->LookupModByName(p.file);
+            if (!mod) {
+                continue;
+            }
+            if (auto* perk = dh->LookupForm<RE::BGSPerk>(p.localID & (mod->IsLight() ? 0xFFFu : 0xFFFFFFu), p.file)) {
+                g_perks[g_perkCount++] = perk;
+            }
+        }
     }
 
     std::int32_t CountOwnedPerksFromList() {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            return 0;
+        }
         std::int32_t owned = 0;
-        for (std::size_t i = 0; i < SFF_Settings::PerkSpecCount; ++i) {
-            const auto& p = SFF_Settings::PerkSpecs[i];
-            if (HasPerkFromSpec(p.file, p.localID)) ++owned;
+        for (std::size_t i = 0; i < g_perkCount; ++i) {
+            if (player->HasPerk(g_perks[i])) {
+                ++owned;
+            }
         }
         return owned;
     }
@@ -181,10 +195,9 @@ namespace {
         if (g_sffCanRecruitMore) g_sffCanRecruitMore->value = canRecruitMore ? 1.0f : 0.0f;
     }
 
-    RE::Actor* DialogueSpeaker() {
-        auto* topics = RE::MenuTopicManager::GetSingleton();
-        auto speaker = topics ? topics->speaker.get() : nullptr;
-        return speaker ? speaker->As<RE::Actor>() : nullptr;
+    void ApplySettingsGate() {
+        ResolvePerks();
+        ApplyFollowerDialogueGate(nullptr);
     }
 
     bool IsInServiceEssential(RE::Actor* a) { return a && g_currentFollowerFaction && a->IsInFaction(g_currentFollowerFaction) && a->IsPlayerTeammate(); }
@@ -292,23 +305,20 @@ namespace {
         }
         RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* e, RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
             if (e->menuName == "Dialogue Menu") {
-                ApplyFollowerDialogueGate(e->opening ? DialogueSpeaker() : nullptr);
-                if (e->opening && SFF_Settings::FollowerCrossfire) DeferSyncParty();
+                if (!e->opening) {
+                    ApplyFollowerDialogueGate(nullptr);
+                } else if (SFF_Settings::FollowerCrossfire) {
+                    DeferSyncParty();
+                }
             }
             return RE::BSEventNotifyControl::kContinue;
         }
     };
 
-    struct DialogueStartHook {
-        static bool Thunk(RE::Actor* actor, bool start, bool forceGreet, RE::TESTopicInfo* topic) {
-            if (start) {
-                ApplyFollowerDialogueGate(actor);
-            }
-            const bool result = original(actor, start, forceGreet, topic);
-            if (start) {
-                ApplyFollowerDialogueGate(DialogueSpeaker());
-            }
-            return result;
+    struct PickTopicInfo {
+        static RE::TESTopicInfo* Thunk(RE::TESTopic* topic, bool* a2, RE::TESObjectREFR* speaker, RE::PlayerCharacter* target, bool a5, std::int64_t a6, std::int64_t a7) {
+            ApplyFollowerDialogueGate(speaker ? speaker->As<RE::Actor>() : nullptr);
+            return original(topic, a2, speaker, target, a5, a6, a7);
         }
         static inline REL::Relocation<decltype(Thunk)> original;
     };
@@ -327,8 +337,8 @@ namespace {
 
     void Install() {
         if (auto* ui = RE::UI::GetSingleton()) ui->AddEventSink<RE::MenuOpenCloseEvent>(MenuSink::GetSingleton());
-        REL::Relocation<std::uintptr_t> characterVtbl{RE::VTABLE_Character[0]};
-        DialogueStartHook::original = characterVtbl.write_vfunc(0x41, DialogueStartHook::Thunk);
+        REL::Relocation<std::uintptr_t> target{RELOCATION_ID(34476, 35303), REL::Relocate(0x85, 0x88)};  // MenuTopicManager::sub
+        PickTopicInfo::original = target.write_call<5>(PickTopicInfo::Thunk);
         auto* events = RE::ScriptEventSourceHolder::GetSingleton();
         if (!events) return;
         if (events->GetEventSource<RE::TESFastTravelEndEvent>()) events->AddEventSink<RE::TESFastTravelEndEvent>(TravelSink::GetSingleton());
@@ -339,6 +349,7 @@ namespace {
             ResolveForms();
             if (!g_sffCurrentFollowerCount) MessageAndExit("Missing required plugin in load order:\nSimple Follower Framework.esp\nEnable it in your load order, then relaunch.");
             CountFollowerSlots();
+            ResolvePerks();
             ApplyFollowerDialogueGate(nullptr);
             Install();
         } else if (msg->type == SKSE::MessagingInterface::kPreLoadGame) {
@@ -348,6 +359,7 @@ namespace {
                 RestoreAllEssentialFlags();
             }
             SFF_Settings::Load(true);
+            ResolvePerks();
             ApplyFollowerDialogueGate(nullptr);
             ApplyFriendlyFire();
             ApplySandbox();
@@ -359,10 +371,10 @@ namespace {
 
 extern "C" __declspec(dllexport) bool SKSEPlugin_Load(const SKSE::LoadInterface* skse) {
     EarlyPreflightCheck();
-    SKSE::Init(skse);
+    SKSE::Init(skse, {.trampoline = true, .trampolineSize = 14});
     SFF_Settings::Load();
 
-    SFF_Settings::ApplyGateCallback = []() { ApplyFollowerDialogueGate(nullptr); };
+    SFF_Settings::ApplyGateCallback = ApplySettingsGate;
     SFF_Settings::FriendlyFireCallback = []() { ApplyFriendlyFire(); };
     SFF_Settings::SandboxCallback = []() { ApplySandbox(); };
     SFF_Settings::HomesCallback = []() { ApplyHomes(); };
